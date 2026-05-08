@@ -1,6 +1,6 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef } from 'react';
-import { Group, type AnimationAction } from 'three';
+import { type AnimationAction } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER, type Vec3 } from '@slipstream/shared';
 
@@ -22,12 +22,14 @@ const AIRBORNE_VY = 0.5; // |velocity.y| above this counts as airborne
 type ClipKey = 'Idle' | 'Walk' | 'Run' | 'Jump';
 
 export const Character = ({ velocity, alive }: Props) => {
-  const groupRef = useRef<Group>(null);
   const gltf = useGLTF(MODEL_URL);
   // Drei's useGLTF returns a shared scene; clone for multi-instance use so
-  // each character animates its own skeleton.
+  // each character animates its own skeleton. Pass the cloned scene directly
+  // to useAnimations so the mixer attaches to the object that actually
+  // contains the bones (passing an outer wrapper ref relies on tree traversal
+  // and has been a source of intermittent bind issues).
   const cloned = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
-  const { actions } = useAnimations(gltf.animations, groupRef);
+  const { actions } = useAnimations(gltf.animations, cloned);
   const currentAnim = useRef<ClipKey>('Idle');
 
   // Soldier.glb ships with clip names "Idle", "Walk", "Run", "TPose" — no
@@ -100,7 +102,7 @@ export const Character = ({ velocity, alive }: Props) => {
   // is already -z (matching our world's forward at yaw=0), so no extra
   // rotation needed.
   return (
-    <group ref={groupRef} position={[0, -PLAYER.height / 2, 0]}>
+    <group position={[0, -PLAYER.height / 2, 0]}>
       <primitive object={cloned} />
     </group>
   );
