@@ -84,6 +84,18 @@ const CLIP_NAMES: Record<ClipKey, string | null> = {
   Fire: 'Fire',
 };
 
+// Per-clip playback speed multiplier. Mixamo's stock Walk/Run clips animate
+// the legs slower than the world-space speed at our walkSpeed/sprintSpeed,
+// so the feet appear to slide. Doubling the playback rate roughly matches
+// the cycle to actual ground speed.
+const CLIP_TIMESCALE: Record<ClipKey, number> = {
+  Idle: 1,
+  Walk: 2,
+  Run: 2,
+  Jump: 0, // unused (Jump path freezes the action)
+  Fire: 1,
+};
+
 export const Character = ({ velocity, alive, playerId }: Props) => {
   const gltf = useGLTF(MODEL_URL);
   const cloned = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
@@ -238,7 +250,7 @@ const applyClipMode = (
   }
 
   action.paused = false;
-  action.timeScale = 1;
+  action.timeScale = CLIP_TIMESCALE[mode] ?? 1;
   if (mode === 'Fire' && freshClip) {
     // Restart the fire clip from the beginning so each shot replays cleanly.
     action.time = 0;
