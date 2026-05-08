@@ -1,13 +1,18 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
+import { useFrame } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AnimationClip,
   BoxGeometry,
   CylinderGeometry,
+  Euler,
   Group,
+  Matrix4,
   Mesh,
   MeshStandardMaterial,
   Object3D,
+  Quaternion,
+  Vector3,
   type AnimationAction,
 } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -140,26 +145,53 @@ export const Character = ({ velocity, alive, playerId }: Props) => {
   // Attach a rifle to the right-hand bone. With rifle-aim animations, the
   // hands are posed in a grip stance, so the rifle ends up looking held
   // (both hands near each other on the weapon).
+  // Mixamo skeletons exported from Blender end up with a ~0.001 cumulative
+  // world scale on every bone — bone-as-parent makes any child invisible
+  // unless you compensate. Workaround: parent the gun to the wrapper group
+  // (NOT the bone) and copy the bone's world transform onto the gun each
+  // frame. This way the gun follows the hand without inheriting the
+  // skeleton's scale weirdness.
+  const gunMeshRef = useRef<Group | null>(null);
+  const wrapperRef = useRef<Group | null>(null);
+  const handBoneRef = useRef<Object3D | null>(null);
+  const gunLocalMatrix = useMemo(() => {
+    const m = new Matrix4();
+    m.compose(
+      new Vector3(GUN_POS_X, GUN_POS_Y, GUN_POS_Z),
+      new Quaternion().setFromEuler(new Euler(GUN_ROT_X, GUN_ROT_Y, GUN_ROT_Z, 'XYZ')),
+      new Vector3(GUN_SCALE, GUN_SCALE, GUN_SCALE),
+    );
+    return m;
+  }, []);
+  const tmpMat = useMemo(() => new Matrix4(), []);
+  const tmpInv = useMemo(() => new Matrix4(), []);
+
   useEffect(() => {
-    const bone = findRightHandBone(cloned);
-    if (!bone) {
+    handBoneRef.current = findRightHandBone(cloned);
+    if (!handBoneRef.current) {
       console.warn('Character: no right-hand bone found, gun not attached');
-      return;
     }
-    const gun = createRifleMesh();
-    gun.position.set(GUN_POS_X, GUN_POS_Y, GUN_POS_Z);
-    gun.rotation.set(GUN_ROT_X, GUN_ROT_Y, GUN_ROT_Z);
-    bone.add(gun);
     return () => {
-      bone.remove(gun);
-      gun.traverse((obj) => {
-        if (obj instanceof Mesh) {
-          obj.geometry.dispose();
-          if (obj.material instanceof MeshStandardMaterial) obj.material.dispose();
-        }
-      });
+      handBoneRef.current = null;
     };
   }, [cloned]);
+
+  useFrame(() => {
+    const wrapper = wrapperRef.current;
+    const gun = gunMeshRef.current;
+    const bone = handBoneRef.current;
+    if (!wrapper || !gun || !bone) return;
+    // Get the bone's world position, convert to wrapper-local. We skip
+    // rotation tracking on purpose — Mixamo's bone world matrix bakes a
+    // ~0.001 cumulative scale that contaminates rotation extraction.
+    // Using a fixed orientation works because the wrapper already faces
+    // the player's forward direction; rotation.y = π flips the gun's
+    // local -Z (barrel) to point forward.
+    bone.getWorldPosition(gun.position);
+    wrapper.worldToLocal(gun.position);
+    gun.rotation.set(0, Math.PI, 0);
+    gun.scale.setScalar(GUN_SCALE);
+  });
 
   // State machine. Acts only on actual transitions.
   useEffect(() => {
@@ -212,11 +244,33 @@ export const Character = ({ velocity, alive, playerId }: Props) => {
   // Mixamo character: origin at feet, native forward is +z. Our world has
   // forward = -z at yaw=0, so we apply a 180° y rotation to align them.
   // The position offset pushes feet to ground (player position is capsule center).
+  // Gun is rendered as a sibling of the cloned model inside the same wrapper
+  // group; useFrame updates its matrix to follow the right-hand bone in
+  // wrapper-local space, sidestepping the bone's small world-scale that
+  // makes bone-attached children invisible.
   return (
-    <group position={[0, -PLAYER.height / 2, 0]} rotation={[0, Math.PI, 0]}>
+    <group ref={wrapperRef} position={[0, -PLAYER.height / 2, 0]} rotation={[0, Math.PI, 0]}>
       <primitive object={cloned} />
+      <CharacterGun gunMeshRef={gunMeshRef} />
     </group>
   );
+};
+
+const CharacterGun = ({ gunMeshRef }: { gunMeshRef: React.MutableRefObject<Group | null> }) => {
+  const gun = useMemo(() => createRifleMesh(), []);
+  useEffect(() => {
+    gunMeshRef.current = gun;
+    return () => {
+      if (gunMeshRef.current === gun) gunMeshRef.current = null;
+      gun.traverse((obj) => {
+        if (obj instanceof Mesh) {
+          obj.geometry.dispose();
+          if (obj.material instanceof MeshStandardMaterial) obj.material.dispose();
+        }
+      });
+    };
+  }, [gun, gunMeshRef]);
+  return <primitive object={gun} />;
 };
 
 const pickAction = (
@@ -273,6 +327,7 @@ const GUN_POS_Z = 0;
 const GUN_ROT_X = -Math.PI / 2;
 const GUN_ROT_Y = 0;
 const GUN_ROT_Z = 0;
+const GUN_SCALE = 1;
 
 // Drop position tracks on the Hips (root) bone from every clip, replacing
 // each clip with a copy whose tracks are filtered. Keeps rotation tracks so
