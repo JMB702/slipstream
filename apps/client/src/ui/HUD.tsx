@@ -15,19 +15,27 @@ export const HUD = () => {
   // landed on someone. Subscribed-via-store so we react to shot events as
   // they arrive instead of waiting for a re-render.
   const [hitAt, setHitAt] = useState(0);
-  const seenEventsRef = useRef(0);
+  // Timestamp-based "what's new" tracking. The store caps events at 200, so
+  // length-based comparison silently breaks after ~200 events: length stays
+  // pinned and the subscriber stops firing. Server-assigned `at` is monotonic
+  // per event, so it's safe to gate on.
+  const lastAtRef = useRef<number>(-1);
   useEffect(() => {
+    if (!myId) return;
+    // Don't replay events that existed before this player got their id.
+    const initial = useGame.getState().events;
+    lastAtRef.current = initial.length ? Math.max(...initial.map((e) => e.at)) : -1;
     return useGame.subscribe((state) => {
-      if (!myId) return;
-      if (state.events.length === seenEventsRef.current) return;
-      const fresh = state.events.slice(seenEventsRef.current);
-      seenEventsRef.current = state.events.length;
       let hitMine = false;
-      for (const ev of fresh) {
+      let maxAt = lastAtRef.current;
+      for (const ev of state.events) {
+        if (ev.at <= lastAtRef.current) continue;
+        if (ev.at > maxAt) maxAt = ev.at;
         if (ev.type === 'shot' && ev.shooterId === myId && ev.hit !== null) {
           hitMine = true;
         }
       }
+      lastAtRef.current = maxAt;
       if (hitMine) setHitAt(performance.now());
     });
   }, [myId]);

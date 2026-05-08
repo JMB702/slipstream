@@ -164,19 +164,26 @@ export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) 
   // a timer FIRE_HOLD_MS after the most recent shot event for this player.
   const [firing, setFiring] = useState(false);
   const fireTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const seenEventsRef = useRef(0);
+  // Timestamp-based detection. Length-based comparison silently breaks once
+  // the store's 200-event cap fills: array length stays pinned and the
+  // subscriber stops firing, killing muzzle flash + Fire animation triggers
+  // after a couple dozen seconds of play. Server-assigned `at` is monotonic.
+  const lastAtRef = useRef<number>(-1);
   const muzzleFlashUntilRef = useRef(0);
 
   useEffect(() => {
+    if (!playerId) return;
+    const initial = useGame.getState().events;
+    lastAtRef.current = initial.length ? Math.max(...initial.map((e) => e.at)) : -1;
     return useGame.subscribe((state) => {
-      if (!playerId) return;
-      if (state.events.length === seenEventsRef.current) return;
-      const fresh = state.events.slice(seenEventsRef.current);
-      seenEventsRef.current = state.events.length;
       let firedThisBatch = false;
-      for (const ev of fresh) {
+      let maxAt = lastAtRef.current;
+      for (const ev of state.events) {
+        if (ev.at <= lastAtRef.current) continue;
+        if (ev.at > maxAt) maxAt = ev.at;
         if (ev.type === 'shot' && ev.shooterId === playerId) firedThisBatch = true;
       }
+      lastAtRef.current = maxAt;
       if (!firedThisBatch) return;
       setFiring(true);
       muzzleFlashUntilRef.current = performance.now() + MUZZLE_FLASH_MS;
