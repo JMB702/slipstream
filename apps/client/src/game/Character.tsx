@@ -1,6 +1,14 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type AnimationAction } from 'three';
+import {
+  BoxGeometry,
+  CylinderGeometry,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  Object3D,
+  type AnimationAction,
+} from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { useGame } from '../store.js';
@@ -72,7 +80,7 @@ const CLIP_NAMES: Record<ClipKey, string | null> = {
   Walk: 'Walk',
   Run: 'Run',
   Jump: 'Run', // re-uses Run frozen mid-stride; replace with 'Jump' when a real clip lands
-  Fire: null, // e.g. 'Fire' or 'Firing Rifle' once a Fire clip is in the GLB
+  Fire: 'Fire',
 };
 
 export const Character = ({ velocity, alive, playerId }: Props) => {
@@ -109,6 +117,30 @@ export const Character = ({ velocity, alive, playerId }: Props) => {
     const idle = actions[CLIP_NAMES.Idle ?? ''];
     if (idle) idle.reset().fadeIn(0.15).play();
   }, [actions]);
+
+  // Attach a rifle to the right-hand bone. With rifle-aim animations, the
+  // hands are posed in a grip stance, so the rifle ends up looking held
+  // (both hands near each other on the weapon).
+  useEffect(() => {
+    const bone = findRightHandBone(cloned);
+    if (!bone) {
+      console.warn('Character: no right-hand bone found, gun not attached');
+      return;
+    }
+    const gun = createRifleMesh();
+    gun.position.set(GUN_POS_X, GUN_POS_Y, GUN_POS_Z);
+    gun.rotation.set(GUN_ROT_X, GUN_ROT_Y, GUN_ROT_Z);
+    bone.add(gun);
+    return () => {
+      bone.remove(gun);
+      gun.traverse((obj) => {
+        if (obj instanceof Mesh) {
+          obj.geometry.dispose();
+          if (obj.material instanceof MeshStandardMaterial) obj.material.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   // State machine. Acts only on actual transitions.
   useEffect(() => {
@@ -204,4 +236,85 @@ const applyClipMode = (
     // Restart the fire clip from the beginning so each shot replays cleanly.
     action.time = 0;
   }
+};
+
+// =============================================================================
+// Rifle attached to the right-hand bone. Tunable offsets — Mixamo's right-hand
+// bone has its local axes oriented along the fingers, so the rifle needs to
+// rotate to align with the grip direction. Adjust if the rifle floats off-hand.
+// =============================================================================
+const GUN_POS_X = 0;
+const GUN_POS_Y = 0.04;
+const GUN_POS_Z = 0.12;
+const GUN_ROT_X = 0;
+const GUN_ROT_Y = Math.PI / 2;
+const GUN_ROT_Z = 0;
+
+const findRightHandBone = (root: Object3D): Object3D | null => {
+  let best: Object3D | null = null;
+  root.traverse((obj) => {
+    if (best) return;
+    const name = obj.name;
+    const lower = name.toLowerCase();
+    if (
+      name === 'mixamorigRightHand' ||
+      name === 'RightHand' ||
+      name === 'Hand_R' ||
+      name === 'hand_r' ||
+      (lower.includes('hand') &&
+        (lower.includes('right') || lower.endsWith('_r') || lower.endsWith('.r')))
+    ) {
+      best = obj;
+    }
+  });
+  return best;
+};
+
+// Two-handed rifle. Local origin sits at the pistol-grip — that's where the
+// dominant hand goes, so attaching to the right-hand bone places the grip
+// in the hand naturally.
+const createRifleMesh = (): Group => {
+  const gun = new Group();
+
+  const metal = new MeshStandardMaterial({ color: '#1a1a1a', metalness: 0.7, roughness: 0.35 });
+  const wood = new MeshStandardMaterial({ color: '#3a2818', metalness: 0.05, roughness: 0.85 });
+
+  // Receiver — main body, sits forward of the grip
+  const receiver = new Mesh(new BoxGeometry(0.06, 0.08, 0.3), metal);
+  receiver.position.set(0, 0.07, -0.05);
+  receiver.castShadow = true;
+  gun.add(receiver);
+
+  // Barrel — extends forward (-z) from the front of the receiver
+  const barrel = new Mesh(new CylinderGeometry(0.014, 0.014, 0.4, 12), metal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.09, -0.4);
+  barrel.castShadow = true;
+  gun.add(barrel);
+
+  // Stock — extends backward (+z) from the receiver
+  const stock = new Mesh(new BoxGeometry(0.05, 0.08, 0.22), wood);
+  stock.position.set(0, 0.06, 0.21);
+  stock.castShadow = true;
+  gun.add(stock);
+
+  // Pistol grip — directly at the gun's local origin (where the hand bone holds it)
+  const grip = new Mesh(new BoxGeometry(0.04, 0.11, 0.05), wood);
+  grip.position.set(0, 0, 0);
+  grip.rotation.x = -0.18;
+  grip.castShadow = true;
+  gun.add(grip);
+
+  // Forend — under the barrel, support-hand grip
+  const forend = new Mesh(new BoxGeometry(0.05, 0.04, 0.18), wood);
+  forend.position.set(0, 0.05, -0.22);
+  forend.castShadow = true;
+  gun.add(forend);
+
+  // Iron sight
+  const sight = new Mesh(new BoxGeometry(0.012, 0.025, 0.02), metal);
+  sight.position.set(0, 0.13, -0.1);
+  gun.add(sight);
+
+  return gun;
 };
