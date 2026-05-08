@@ -10,9 +10,6 @@ const MODEL_URL = '/models/Soldier.glb';
 // doesn't have to wait on the network.
 useGLTF.preload(MODEL_URL);
 
-// Drei's useGLTF returns a shared scene reference. For multi-instance use we
-// must clone it, and SkeletonUtils.clone preserves the skeleton bindings so
-// each character animates independently.
 interface Props {
   velocity: Vec3;
   alive: boolean;
@@ -20,44 +17,57 @@ interface Props {
 
 const WALK_RUN_THRESHOLD = (PLAYER.walkSpeed + PLAYER.sprintSpeed) / 2;
 const IDLE_SPEED = 0.15;
+const AIRBORNE_VY = 0.5; // |velocity.y| above this counts as airborne
+
+type ClipKey = 'Idle' | 'Walk' | 'Run';
 
 export const Character = ({ velocity, alive }: Props) => {
   const groupRef = useRef<Group>(null);
   const gltf = useGLTF(MODEL_URL);
+  // Drei's useGLTF returns a shared scene; clone for multi-instance use so
+  // each character animates its own skeleton.
   const cloned = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
   const { actions } = useAnimations(gltf.animations, groupRef);
-  const currentAnim = useRef<'Idle' | 'Walk' | 'Run'>('Idle');
+  const currentAnim = useRef<ClipKey>('Idle');
 
-  // Soldier.glb ships with clip names "Idle", "Walk", "Run", "TPose". If you
-  // swap the model out, edit the names below to match the new GLB's clips
-  // (e.g., Mixamo characters embed clip names like "mixamo.com" or the
-  // animation file's name — inspect with three's GLTFLoader.animations).
-  const clipNames = useMemo(
-    () => ({
-      Idle: 'Idle',
-      Walk: 'Walk',
-      Run: 'Run',
-    }),
+  // Soldier.glb ships with clip names "Idle", "Walk", "Run", "TPose". Mixamo
+  // GLBs typically use "mixamo.com" or the source-file name — inspect with
+  // GLTFLoader().load(...).animations to discover the names of any new model.
+  const clipNames = useMemo<Record<ClipKey, string>>(
+    () => ({ Idle: 'Idle', Walk: 'Walk', Run: 'Run' }),
     [],
   );
 
+  // Single effect drives the animation state machine. Picking the right clip
+  // and ensuring it's actually running both happen here, so a re-create of
+  // the `actions` object can't leave a previously-played action stopped with
+  // no one to restart it.
   useEffect(() => {
-    const idle = actions[clipNames.Idle];
-    if (idle) idle.reset().play();
-    return () => {
-      for (const a of Object.values(actions)) a?.stop();
-    };
-  }, [actions, clipNames]);
+    if (!alive) {
+      for (const a of Object.values(actions)) a?.fadeOut(0.2);
+      return;
+    }
 
-  useEffect(() => {
-    if (!alive) return;
     const speed = Math.hypot(velocity[0], velocity[2]);
-    const wanted: keyof typeof clipNames =
-      speed < IDLE_SPEED ? 'Idle' : speed < WALK_RUN_THRESHOLD ? 'Walk' : 'Run';
-    if (currentAnim.current === wanted) return;
+    const airborne = Math.abs(velocity[1]) > AIRBORNE_VY;
+    const wanted: ClipKey = airborne
+      ? 'Idle' // No jump clip in Soldier.glb — freeze on idle during airtime
+      : speed < IDLE_SPEED
+        ? 'Idle'
+        : speed < WALK_RUN_THRESHOLD
+          ? 'Walk'
+          : 'Run';
+
+    const next = actions[clipNames[wanted]];
+
+    if (currentAnim.current === wanted) {
+      // Defensive: if something stopped this action (e.g. the actions object
+      // was rebuilt), make sure it's playing.
+      if (next && !next.isRunning()) next.reset().fadeIn(0.15).play();
+      return;
+    }
 
     const prev = actions[clipNames[currentAnim.current]];
-    const next = actions[clipNames[wanted]];
     if (prev) prev.fadeOut(0.15);
     if (next) next.reset().fadeIn(0.15).play();
     currentAnim.current = wanted;
@@ -66,11 +76,11 @@ export const Character = ({ velocity, alive }: Props) => {
   if (!alive) return null;
 
   // Soldier.glb origin is at the feet; our player position is the capsule
-  // center, so push the model down by half-height. The 180° yaw rotation
-  // aligns the model's forward (-z in its own space) with our world's forward
-  // direction at yaw=0.
+  // center, so push the model down by half-height. The model's local forward
+  // is already -z (matching our world's forward at yaw=0), so no extra
+  // rotation needed.
   return (
-    <group ref={groupRef} position={[0, -PLAYER.height / 2, 0]} rotation={[0, Math.PI, 0]}>
+    <group ref={groupRef} position={[0, -PLAYER.height / 2, 0]}>
       <primitive object={cloned} />
     </group>
   );
