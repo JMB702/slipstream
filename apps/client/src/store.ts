@@ -19,7 +19,11 @@ interface State {
   chat: GameEvent[];
   killTarget: number;
   winnerId: PlayerId | null;
+  // Reason from the most recent socket close, surfaced in the Lobby.
+  // Cleared when the user starts another join attempt.
+  lastCloseReason: string | null;
   setConn(s: ConnState): void;
+  setCloseReason(r: string | null): void;
   setMyId(id: PlayerId): void;
   ingestSnapshot(s: GameSnapshot): void;
   ingestEvents(e: GameEvent[]): void;
@@ -39,9 +43,14 @@ export const useGame = create<State>((set, get) => ({
   chat: [],
   killTarget: MATCH.defaultKillTarget,
   winnerId: null,
+  lastCloseReason: null,
 
   setConn(s) {
     set({ conn: s });
+  },
+
+  setCloseReason(r) {
+    set({ lastCloseReason: r });
   },
 
   setMyId(id) {
@@ -83,6 +92,7 @@ export const useGame = create<State>((set, get) => ({
       chat: [],
       killTarget: MATCH.defaultKillTarget,
       winnerId: null,
+      lastCloseReason: null,
     });
   },
 }));

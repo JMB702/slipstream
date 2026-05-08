@@ -52,11 +52,28 @@ export default class SlipstreamServer implements Party.Server {
   }
 
   onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): void {
+    const url = new URL(ctx.request.url);
+
+    // Optional access-code gate. If ACCESS_CODE is set in the server's env,
+    // every connection must present a matching ?accessCode= or the socket
+    // is closed with code 4003 + a reason the client can render in the lobby.
+    // Unset env = no gate (handy in CI / private LAN dev).
+    // Read via globalThis so we don't need @types/node in the party tsconfig;
+    // partykit dev populates process.env from .env at runtime.
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+    const required = proc?.env?.ACCESS_CODE ?? '';
+    if (required) {
+      const provided = url.searchParams.get('accessCode') ?? '';
+      if (provided !== required) {
+        conn.close(4003, 'invalid access code');
+        return;
+      }
+    }
+
     if (this.players.size >= MAX_PLAYERS) {
       conn.close(4001, 'room full');
       return;
     }
-    const url = new URL(ctx.request.url);
     const name = (url.searchParams.get('name') ?? 'Player').slice(0, 24) || 'Player';
     if (!this.killTargetLocked) {
       const raw = url.searchParams.get('killTarget');

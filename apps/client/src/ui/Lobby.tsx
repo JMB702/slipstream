@@ -1,14 +1,23 @@
 import { useState } from 'react';
 import { MATCH } from '@slipstream/shared';
+import { useGame } from '../store.js';
 
 interface Props {
-  onJoin(args: { name: string; room: string; killTarget: number }): void;
+  onJoin(args: { name: string; room: string; killTarget: number; accessCode: string }): void;
 }
+
+const ACCESS_CODE_LEN = 4;
 
 export const Lobby = ({ onJoin }: Props) => {
   const [name, setName] = useState(() => loadName());
   const [room, setRoom] = useState('arena-1');
   const [killTarget, setKillTarget] = useState<string>(String(MATCH.defaultKillTarget));
+  const [accessCode, setAccessCode] = useState(() => loadCode());
+  const [localError, setLocalError] = useState<string | null>(null);
+  const closeReason = useGame((s) => s.lastCloseReason);
+  const conn = useGame((s) => s.conn);
+  const error = localError ?? closeReason;
+  const codeOk = accessCode.length === ACCESS_CODE_LEN;
 
   return (
     <div style={overlay}>
@@ -52,23 +61,54 @@ export const Lobby = ({ onJoin }: Props) => {
           </span>
         </label>
 
+        <label style={label}>
+          Access code
+          <input
+            style={input}
+            type="text"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={ACCESS_CODE_LEN}
+            value={accessCode}
+            onChange={(e) => {
+              setAccessCode(e.target.value.replace(/[^0-9]/g, '').slice(0, ACCESS_CODE_LEN));
+              setLocalError(null);
+              if (closeReason) useGame.getState().setCloseReason(null);
+            }}
+          />
+          <span style={hint}>{ACCESS_CODE_LEN} digits.</span>
+        </label>
+
+        {error && (
+          <div style={errorStyle}>{error}</div>
+        )}
+
         <button
-          style={button}
+          style={{ ...button, opacity: codeOk ? 1 : 0.55, cursor: codeOk ? 'pointer' : 'not-allowed' }}
+          disabled={!codeOk || conn === 'connecting'}
           onClick={() => {
+            if (!codeOk) {
+              setLocalError(`Enter the ${ACCESS_CODE_LEN}-digit access code.`);
+              return;
+            }
             const finalName = name.trim() || 'Player';
             saveName(finalName);
+            saveCode(accessCode);
             const parsed = Math.floor(Number(killTarget));
             const target = Number.isFinite(parsed)
               ? Math.max(MATCH.minKillTarget, Math.min(MATCH.maxKillTarget, parsed))
               : MATCH.defaultKillTarget;
+            useGame.getState().setCloseReason(null);
+            setLocalError(null);
             onJoin({
               name: finalName,
               room: room.trim() || 'arena-1',
               killTarget: target,
+              accessCode,
             });
           }}
         >
-          Drop in
+          {conn === 'connecting' ? 'Connecting…' : 'Drop in'}
         </button>
 
         <p style={{ opacity: 0.5, fontSize: 12, marginTop: 16 }}>
@@ -124,6 +164,16 @@ const hint: React.CSSProperties = {
   fontWeight: 'normal',
 };
 
+const errorStyle: React.CSSProperties = {
+  marginTop: 16,
+  padding: '8px 12px',
+  background: 'rgba(120, 20, 20, 0.4)',
+  border: '1px solid #6a1a1a',
+  borderRadius: 4,
+  fontSize: 12,
+  color: '#ffb0b0',
+};
+
 const button: React.CSSProperties = {
   marginTop: 24,
   width: '100%',
@@ -138,6 +188,7 @@ const button: React.CSSProperties = {
 };
 
 const NAME_KEY = 'slipstream:name';
+const CODE_KEY = 'slipstream:accessCode';
 const loadName = () => {
   try {
     return localStorage.getItem(NAME_KEY) ?? '';
@@ -148,6 +199,20 @@ const loadName = () => {
 const saveName = (n: string) => {
   try {
     localStorage.setItem(NAME_KEY, n);
+  } catch {
+    // ignore
+  }
+};
+const loadCode = () => {
+  try {
+    return localStorage.getItem(CODE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+};
+const saveCode = (c: string) => {
+  try {
+    localStorage.setItem(CODE_KEY, c);
   } catch {
     // ignore
   }

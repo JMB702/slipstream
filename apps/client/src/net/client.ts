@@ -19,13 +19,22 @@ export interface NetClient {
   close(): void;
 }
 
-export const connect = (room: string, name: string, killTarget?: number): NetClient => {
+export const connect = (
+  room: string,
+  name: string,
+  killTarget?: number,
+  accessCode?: string,
+): NetClient => {
   const store = useGame.getState();
   store.setConn('connecting');
+  store.setCloseReason(null);
 
   const query: Record<string, string> = { name };
   if (killTarget != null && Number.isFinite(killTarget)) {
     query.killTarget = String(Math.floor(killTarget));
+  }
+  if (accessCode) {
+    query.accessCode = accessCode;
   }
 
   const socket = new PartySocket({
@@ -39,7 +48,17 @@ export const connect = (room: string, name: string, killTarget?: number): NetCli
     useGame.getState().setConn('connected');
   });
 
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', (event) => {
+    // Server uses 4003 for a bad access code. PartySocket auto-reconnects on
+    // most close codes; we only surface a reason when it's a hard rejection
+    // the player can actually fix in the lobby.
+    const code = (event as CloseEvent).code;
+    const reason = (event as CloseEvent).reason;
+    if (code === 4003) {
+      useGame.getState().setCloseReason(reason || 'invalid access code');
+    } else if (code === 4001) {
+      useGame.getState().setCloseReason(reason || 'room full');
+    }
     useGame.getState().setConn('disconnected');
   });
 

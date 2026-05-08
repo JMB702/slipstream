@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { connect, type NetClient } from './net/client.js';
 import { Scene } from './game/Scene.js';
 import { Lobby } from './ui/Lobby.js';
@@ -10,17 +10,20 @@ import { useGame } from './store.js';
 export const App = () => {
   const [client, setClient] = useState<NetClient | null>(null);
   const [name, setName] = useState('');
+  const lastCloseReason = useGame((s) => s.lastCloseReason);
 
   const onJoin = ({
     name,
     room,
     killTarget,
+    accessCode,
   }: {
     name: string;
     room: string;
     killTarget: number;
+    accessCode: string;
   }) => {
-    const c = connect(room, name, killTarget);
+    const c = connect(room, name, killTarget, accessCode);
     setClient(c);
     setName(name);
   };
@@ -30,6 +33,16 @@ export const App = () => {
     setClient(null);
     useGame.getState().reset();
   };
+
+  // If the server hard-rejected us (bad access code, room full), drop back to
+  // the lobby automatically. Without this the player sits on a black canvas
+  // staring at "● disconnected" with no idea what went wrong.
+  useEffect(() => {
+    if (client && lastCloseReason) {
+      client.close();
+      setClient(null);
+    }
+  }, [client, lastCloseReason]);
 
   if (!client) return <Lobby onJoin={onJoin} />;
 
