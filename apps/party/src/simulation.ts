@@ -1,5 +1,6 @@
 import {
   PLAYER,
+  TICK_MS,
   WEAPON,
   applyMovement,
   raycastObstacles,
@@ -32,13 +33,22 @@ export const applyInput = (player: ServerPlayer, input: InputFrame, now: number)
 
 // Fill physics gaps for players who aren't sending inputs (idle, AFK, just spawned).
 // Without this, gravity never runs for them and they freeze at the spawn height.
+//
+// CRITICAL: this only runs when the player is genuinely idle (no input within
+// the last ~1.5 ticks). For an active player, applyInput handles physics on
+// every frame; running integrateIdle on top of it would overwrite the
+// just-computed velocity with (0, 0, 0) — the network would see velocity
+// alternating between intended and zero, and animation state machines on the
+// client would oscillate between Walk and Idle.
+const IDLE_THRESHOLD_MS = TICK_MS * 1.5;
+
 export const integrateIdle = (player: ServerPlayer, now: number): void => {
   if (!player.alive) {
     player.lastIntegratedAt = now;
     return;
   }
   const dtMs = now - player.lastIntegratedAt;
-  if (dtMs <= 0) return;
+  if (dtMs < IDLE_THRESHOLD_MS) return;
   const idleFrame: InputFrame = {
     seq: 0,
     dtMs,

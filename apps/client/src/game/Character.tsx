@@ -1,6 +1,6 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef } from 'react';
-import { Group } from 'three';
+import { Group, type AnimationAction } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER, type Vec3 } from '@slipstream/shared';
 
@@ -19,7 +19,7 @@ const WALK_RUN_THRESHOLD = (PLAYER.walkSpeed + PLAYER.sprintSpeed) / 2;
 const IDLE_SPEED = 0.15;
 const AIRBORNE_VY = 0.5; // |velocity.y| above this counts as airborne
 
-type ClipKey = 'Idle' | 'Walk' | 'Run';
+type ClipKey = 'Idle' | 'Walk' | 'Run' | 'Jump';
 
 export const Character = ({ velocity, alive }: Props) => {
   const groupRef = useRef<Group>(null);
@@ -30,11 +30,14 @@ export const Character = ({ velocity, alive }: Props) => {
   const { actions } = useAnimations(gltf.animations, groupRef);
   const currentAnim = useRef<ClipKey>('Idle');
 
-  // Soldier.glb ships with clip names "Idle", "Walk", "Run", "TPose". Mixamo
-  // GLBs typically use "mixamo.com" or the source-file name — inspect with
-  // GLTFLoader().load(...).animations to discover the names of any new model.
+  // Soldier.glb ships with clip names "Idle", "Walk", "Run", "TPose" — no
+  // dedicated Jump clip. Until a real one is sourced (Mixamo's Jump_Up /
+  // Jump_Loop / Jump_Down combined into a GLB) we fake it by freezing the
+  // Run animation at a mid-stride pose, which reads as a leap silhouette.
+  // To swap in a real jump: add the clip to the GLB, name it "Jump",
+  // remove the freeze code path below, and restore Jump → Jump in clipNames.
   const clipNames = useMemo<Record<ClipKey, string>>(
-    () => ({ Idle: 'Idle', Walk: 'Walk', Run: 'Run' }),
+    () => ({ Idle: 'Idle', Walk: 'Walk', Run: 'Run', Jump: 'Run' }),
     [],
   );
 
@@ -51,7 +54,7 @@ export const Character = ({ velocity, alive }: Props) => {
     const speed = Math.hypot(velocity[0], velocity[2]);
     const airborne = Math.abs(velocity[1]) > AIRBORNE_VY;
     const wanted: ClipKey = airborne
-      ? 'Idle' // No jump clip in Soldier.glb — freeze on idle during airtime
+      ? 'Jump'
       : speed < IDLE_SPEED
         ? 'Idle'
         : speed < WALK_RUN_THRESHOLD
@@ -61,15 +64,28 @@ export const Character = ({ velocity, alive }: Props) => {
     const next = actions[clipNames[wanted]];
 
     if (currentAnim.current === wanted) {
-      // Defensive: if something stopped this action (e.g. the actions object
-      // was rebuilt), make sure it's playing.
-      if (next && !next.isRunning()) next.reset().fadeIn(0.15).play();
+      if (next && !next.isRunning()) {
+        next.reset().fadeIn(0.15).play();
+        if (wanted === 'Jump') freezeOnLeapPose(next);
+      }
       return;
     }
 
     const prev = actions[clipNames[currentAnim.current]];
-    if (prev) prev.fadeOut(0.15);
-    if (next) next.reset().fadeIn(0.15).play();
+    // If the same underlying clip is being reused (e.g. Run → Jump both map
+    // to the Run clip), don't fade it out — that would silence the action
+    // we're about to re-target. Just retarget directly.
+    if (prev && prev !== next) prev.fadeOut(0.15);
+    if (next) {
+      next.reset();
+      if (wanted === 'Jump') {
+        freezeOnLeapPose(next);
+      } else {
+        next.paused = false;
+        next.timeScale = 1;
+      }
+      next.fadeIn(0.15).play();
+    }
     currentAnim.current = wanted;
   }, [velocity, alive, actions, clipNames]);
 
@@ -84,4 +100,13 @@ export const Character = ({ velocity, alive }: Props) => {
       <primitive object={cloned} />
     </group>
   );
+};
+
+// Freeze a Run action at a mid-stride frame so airborne players read as
+// "leaping" rather than legs running through the air.
+const freezeOnLeapPose = (action: AnimationAction): void => {
+  // Run clip is ~0.7s; mid-stride lands around 0.35s with one leg planted.
+  action.time = 0.35;
+  action.paused = true;
+  action.timeScale = 0;
 };
