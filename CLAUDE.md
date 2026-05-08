@@ -59,6 +59,30 @@ pnpm deploy:party      # PartyKit deploy (requires Adobe-free PartyKit login)
 
 `vercel.json` at the repo root pins client builds for Vercel. Set `VITE_PARTYKIT_HOST` to the deployed PartyKit host.
 
+## LAN multiplayer testing
+
+`pnpm dev` binds both servers to `0.0.0.0` so a second computer on the same local network can join without deploying. Three pieces make this work:
+
+- `apps/client/vite.config.ts` sets `server.host: true` → Vite prints both `Local:` and `Network:` URLs on startup.
+- `apps/party/package.json` runs `partykit dev --port 1999`. PartyKit already binds 0.0.0.0 by default; the explicit `--port` keeps the port stable so the client's `localhost:1999` fallback works without env vars.
+- `apps/client/src/net/client.ts` reads an optional `?host=` URL query and uses it before falling back to `VITE_PARTYKIT_HOST`, then `localhost:1999`. Lets the second computer override the host without its own `.env`.
+
+**Procedure (host machine):**
+1. `ipconfig getifaddr en0` (Wi-Fi) or `ipconfig getifaddr en1` (Ethernet) → call it `HOST_IP`.
+2. `pnpm dev`.
+3. macOS firewall is the #1 blocker. System Settings → Network → Firewall: either turn it off for the test, or open it and explicitly allow incoming connections for `node` and `workerd`. The first-launch popup is unreliable for processes spawned by `pnpm` — better to set this up in advance.
+4. Player 1 (host) opens `http://localhost:5173/`.
+5. Player 2 (other computer, same LAN) opens `http://<HOST_IP>:5173/?host=<HOST_IP>:1999`.
+
+Wi-Fi vs Ethernet doesn't matter — what matters is that both machines sit on the same subnet (almost always true if they share one home router; a `192.168.x.x` IP on each is the tell). A Windows player should run `ipconfig` in PowerShell and confirm its `IPv4 Address` shares the first three octets with `HOST_IP`.
+
+**Sanity checks from another shell on the host:**
+- `curl -I http://<HOST_IP>:5173/` → HTTP 200 means Vite is reachable on the LAN interface.
+- `curl -I http://<HOST_IP>:1999/parties/main/test` → any HTTP response (even 404/500) proves PartyKit is reachable; connection-refused or timeout means firewall.
+- From the second machine's browser, hitting `http://<HOST_IP>:5173/` should load the page. If that fails but localhost on the host works, it's network/firewall, not the code.
+
+**If LAN doesn't work** (firewall stays in the way, hotel/office Wi-Fi with client isolation, separate VLANs): `cloudflared tunnel --url http://localhost:1999`, then pass the printed `*.trycloudflare.com` host via `?host=`. The URL-query override handles arbitrary hosts, no code change needed. Last resort: `pnpm deploy:party` and point `?host=` at the prod PartyKit host while keeping the client local.
+
 ## Gotchas (hard-won)
 
 These are the things that have eaten hours. Read before changing related code.

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "partykit dev",
+    "dev": "partykit dev --port 1999",
     "build": "tsc --noEmit",
     "deploy": "partykit deploy",
     "typecheck": "tsc --noEmit"
