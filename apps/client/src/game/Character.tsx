@@ -1,6 +1,14 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef } from 'react';
-import { type AnimationAction } from 'three';
+import {
+  BoxGeometry,
+  CylinderGeometry,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  Object3D,
+  type AnimationAction,
+} from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER, type Vec3 } from '@slipstream/shared';
 
@@ -50,6 +58,35 @@ export const Character = ({ velocity, alive }: Props) => {
     const idle = actions[clipNames.Idle];
     if (idle) idle.reset().fadeIn(0.15).play();
   }, [actions, clipNames]);
+
+  // Attach a gun to the right-hand bone. As a child of the bone, it follows
+  // the hand naturally during the walk/run cycles' arm swings. Bone is found
+  // by name; Soldier.glb uses Mixamo-style names (mixamorigRightHand) but
+  // the search falls back to anything containing both "right" and "hand".
+  useEffect(() => {
+    const bone = findRightHandBone(cloned);
+    if (!bone) {
+      console.warn('Character: no right-hand bone found, gun not attached');
+      return;
+    }
+    const gun = createGunMesh();
+    // Tuning offsets — relative to the hand bone's local space. These were
+    // dialed for Soldier.glb's Mixamo skeleton; tweak if the model changes.
+    gun.position.set(GUN_POS_X, GUN_POS_Y, GUN_POS_Z);
+    gun.rotation.set(GUN_ROT_X, GUN_ROT_Y, GUN_ROT_Z);
+    gun.scale.setScalar(GUN_SCALE);
+    bone.add(gun);
+
+    return () => {
+      bone.remove(gun);
+      gun.traverse((obj) => {
+        if (obj instanceof Mesh) {
+          obj.geometry.dispose();
+          if (obj.material instanceof MeshStandardMaterial) obj.material.dispose();
+        }
+      });
+    };
+  }, [cloned]);
 
   // State machine. ONLY acts on actual transitions — no defensive isRunning
   // check, because that misfires for paused actions (Jump's frozen pose),
@@ -111,6 +148,73 @@ export const Character = ({ velocity, alive }: Props) => {
 // Run clip is ~0.7s; mid-stride lands around 0.35s with one leg planted —
 // reads as a leap silhouette when frozen.
 const JUMP_POSE_TIME = 0.35;
+
+// ----- Gun -----
+// Position/rotation/scale relative to the right-hand bone's local space.
+// Tweak these if you swap the model and the gun ends up floating off the hand.
+const GUN_POS_X = 0;
+const GUN_POS_Y = 0;
+const GUN_POS_Z = 0.1;
+const GUN_ROT_X = 0;
+const GUN_ROT_Y = Math.PI / 2;
+const GUN_ROT_Z = 0;
+const GUN_SCALE = 1;
+
+const findRightHandBone = (root: Object3D): Object3D | null => {
+  let best: Object3D | null = null;
+  root.traverse((obj) => {
+    if (best) return;
+    const name = obj.name;
+    const lower = name.toLowerCase();
+    if (
+      name === 'mixamorigRightHand' ||
+      name === 'RightHand' ||
+      name === 'Hand_R' ||
+      name === 'hand_r' ||
+      (lower.includes('hand') &&
+        (lower.includes('right') || lower.endsWith('_r') || lower.endsWith('.r')))
+    ) {
+      best = obj;
+    }
+  });
+  return best;
+};
+
+// Programmatic SMG-ish gun. A few primitives stacked together: receiver,
+// barrel, grip. No textures, looks like a generic dark-metal weapon. Good
+// enough for an MVP and avoids any asset-licensing question.
+const createGunMesh = (): Group => {
+  const gun = new Group();
+
+  const metal = new MeshStandardMaterial({ color: '#1a1a1a', metalness: 0.7, roughness: 0.35 });
+  const wood = new MeshStandardMaterial({ color: '#3a2818', metalness: 0.05, roughness: 0.85 });
+
+  // Receiver (main body)
+  const receiver = new Mesh(new BoxGeometry(0.05, 0.07, 0.22), metal);
+  receiver.castShadow = true;
+  gun.add(receiver);
+
+  // Barrel (cylinder along Z, in front of receiver)
+  const barrel = new Mesh(new CylinderGeometry(0.013, 0.013, 0.18, 12), metal);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.02, 0.18);
+  barrel.castShadow = true;
+  gun.add(barrel);
+
+  // Grip (angled down-and-back from receiver)
+  const grip = new Mesh(new BoxGeometry(0.04, 0.11, 0.05), wood);
+  grip.position.set(0, -0.07, -0.04);
+  grip.rotation.x = -0.18;
+  grip.castShadow = true;
+  gun.add(grip);
+
+  // Iron sight bump
+  const sight = new Mesh(new BoxGeometry(0.012, 0.018, 0.02), metal);
+  sight.position.set(0, 0.06, 0.02);
+  gun.add(sight);
+
+  return gun;
+};
 
 // Configures an action for the given state. `freshClip` is true when the
 // action's clip is changing (e.g., Idle → Jump) and we want to start the
