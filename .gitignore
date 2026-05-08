@@ -11,3 +11,9 @@ dist/
 .env.local
 .env.*.local
 coverage/
+
+# Mixamo source FBX files — kept locally for re-merging via /tmp/merge_mixamo.py.
+# Only the merged Soldier.glb (in apps/client/public/models/) ships in the repo.
+Animations/
+Characters/
+*.fbx
