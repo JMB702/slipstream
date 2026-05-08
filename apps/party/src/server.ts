@@ -10,7 +10,14 @@ import {
   type GameSnapshot,
   type ServerMessage,
 } from '@slipstream/shared';
-import { applyInput, finishReload, integrateIdle, maybeRespawn, tryFire } from './simulation.js';
+import {
+  applyInput,
+  finishReload,
+  integrateIdle,
+  maybeRespawn,
+  regenHealth,
+  tryFire,
+} from './simulation.js';
 import { initialPlayer, randomSpawn, type ServerPlayer } from './state.js';
 
 export default class SlipstreamServer implements Party.Server {
@@ -83,14 +90,11 @@ export default class SlipstreamServer implements Party.Server {
         const now = this.serverTime();
         for (const frame of msg.frames) {
           if (frame.seq <= player.lastSeenSeq) continue;
-          // No firing or reloading while sprinting — silently demote sprint
-          // when either fires. Reload check uses both the input flag (newly
-          // pressed R) and the player's existing reloading state (so they
-          // keep walking through an in-progress reload even if shift returns).
-          const mustWalk =
-            (frame.fire && frame.sprint) ||
-            (frame.sprint && (frame.reload || player.reloading));
-          const effectiveFrame = mustWalk ? { ...frame, sprint: false } : frame;
+          // No firing while sprinting — silently demote sprint when fire is
+          // pressed. Player walks-while-firing instead of running-while-firing.
+          // Reloading at sprint speed is allowed; the client picks ReloadRun.
+          const effectiveFrame =
+            frame.fire && frame.sprint ? { ...frame, sprint: false } : frame;
           applyInput(player, effectiveFrame, now);
           if (effectiveFrame.fire) this.pendingFire.add(player.id);
         }
@@ -134,6 +138,7 @@ export default class SlipstreamServer implements Party.Server {
     for (const p of all) {
       finishReload(p, now);
       maybeRespawn(p, now);
+      regenHealth(p, now);
       // Run physics for any time gap that hasn't already been integrated by an
       // arriving input — keeps idle/AFK/just-spawned players from floating.
       integrateIdle(p, now);

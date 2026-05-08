@@ -51,22 +51,15 @@ export const LocalPlayer = ({ send, myName }: Props) => {
       accumulator.current = 0;
 
       const fired = consumeFire();
-      const myIdNow = useGame.getState().myId;
-      const meNow =
-        myIdNow != null
-          ? useGame.getState().snapshots[useGame.getState().snapshots.length - 1]?.players.get(myIdNow)
-          : undefined;
-      const reloadingNow = meNow?.reloading ?? false;
       const frame: InputFrame = {
         seq: seqRef.current++,
         dtMs: sendDt,
         forward: live.forward,
         right: live.right,
         jump: live.jump,
-        // Can't sprint while firing or reloading. Server enforces this too;
-        // doing it here keeps client prediction matching the server's
-        // authoritative state.
-        sprint: live.sprint && !fired && !live.reload && !reloadingNow,
+        // Can't sprint while firing. Server enforces this too; doing it here
+        // keeps client prediction matching the server's authoritative state.
+        sprint: live.sprint && !fired,
         fire: fired,
         reload: live.reload,
         yaw: live.yaw,

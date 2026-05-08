@@ -92,6 +92,7 @@ type ClipKey =
   | 'FireWalk'
   | 'Reload'
   | 'ReloadWalk'
+  | 'ReloadRun'
   | `Walk${Dir}`
   | `Run${Dir}`;
 
@@ -104,6 +105,7 @@ const CLIP_NAMES: Record<ClipKey, string | null> = {
   FireWalk: 'FireWalk',
   Reload: 'Reload',
   ReloadWalk: 'ReloadWalk',
+  ReloadRun: 'ReloadRun',
   WalkF: 'WalkF',
   WalkFR: 'WalkFR',
   WalkR: 'WalkR',
@@ -132,6 +134,7 @@ const CLIP_TIMESCALE: Record<ClipKey, number> = {
   FireWalk: 1,
   Reload: 1,
   ReloadWalk: 1,
+  ReloadRun: 1,
   WalkF: 2, WalkFR: 2, WalkR: 2, WalkBR: 2, WalkB: 2, WalkBL: 2, WalkL: 2, WalkFL: 2,
   RunF: 1, RunFR: 1, RunR: 1, RunBR: 1, RunB: 1, RunBL: 1, RunL: 1, RunFL: 1,
 };
@@ -262,13 +265,16 @@ export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) 
     const fireWalkClip = CLIP_NAMES.FireWalk ? actions[CLIP_NAMES.FireWalk] : undefined;
     const reloadClip = CLIP_NAMES.Reload ? actions[CLIP_NAMES.Reload] : undefined;
     const reloadWalkClip = CLIP_NAMES.ReloadWalk ? actions[CLIP_NAMES.ReloadWalk] : undefined;
+    const reloadRunClip = CLIP_NAMES.ReloadRun ? actions[CLIP_NAMES.ReloadRun] : undefined;
 
     // Priority (when grounded): Reload > Fire > locomotion. Airborne overrides
     // both — jumping mid-reload or mid-fire looks worse than letting Jump play.
-    // FireWalk / ReloadWalk are the moving variants (legs cycle while upper
-    // body acts); Fire / Reload are the standing variants.
+    // ReloadRun / ReloadWalk / Reload are picked by speed band; FireWalk vs
+    // Fire is moving vs standing (no run-fire variant).
     let desired: ClipKey;
-    if (reloading && !airborne && speed >= IDLE_SPEED && reloadWalkClip) {
+    if (reloading && !airborne && speed >= WALK_RUN_THRESHOLD && reloadRunClip) {
+      desired = 'ReloadRun';
+    } else if (reloading && !airborne && speed >= IDLE_SPEED && reloadWalkClip) {
       desired = 'ReloadWalk';
     } else if (reloading && reloadClip && !airborne) {
       desired = 'Reload';
@@ -381,7 +387,7 @@ const applyClipMode = (
 
   action.paused = false;
   action.timeScale = CLIP_TIMESCALE[mode] ?? 1;
-  if (freshClip && (mode === 'Fire' || mode === 'Reload' || mode === 'ReloadWalk')) {
+  if (freshClip && (mode === 'Fire' || mode === 'Reload' || mode === 'ReloadWalk' || mode === 'ReloadRun')) {
     // Restart these clips from the beginning so each shot/reload replays cleanly.
     action.time = 0;
   }
