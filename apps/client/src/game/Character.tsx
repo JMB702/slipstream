@@ -63,27 +63,32 @@ export const Character = ({ velocity, alive }: Props) => {
 
     const next = actions[clipNames[wanted]];
 
+    // Same logical state — defensive resume only; don't disturb time/weight.
     if (currentAnim.current === wanted) {
       if (next && !next.isRunning()) {
-        next.reset().fadeIn(0.15).play();
-        if (wanted === 'Jump') freezeOnLeapPose(next);
+        applyClipMode(next, wanted, /* freshClip */ false);
+        next.fadeIn(0.15).play();
       }
       return;
     }
 
     const prev = actions[clipNames[currentAnim.current]];
-    // If the same underlying clip is being reused (e.g. Run → Jump both map
-    // to the Run clip), don't fade it out — that would silence the action
-    // we're about to re-target. Just retarget directly.
-    if (prev && prev !== next) prev.fadeOut(0.15);
+    const sameClip = prev === next;
+
+    // Same underlying clip (Run ↔ Jump) — toggle freeze state in place.
+    // Don't reset time and don't crossfade: the action keeps its current
+    // weight (1) and continues from where it was paused.
+    if (sameClip && next) {
+      applyClipMode(next, wanted, /* freshClip */ false);
+      if (!next.isRunning()) next.play();
+      currentAnim.current = wanted;
+      return;
+    }
+
+    // Different clip — full crossfade.
+    if (prev) prev.fadeOut(0.15);
     if (next) {
-      next.reset();
-      if (wanted === 'Jump') {
-        freezeOnLeapPose(next);
-      } else {
-        next.paused = false;
-        next.timeScale = 1;
-      }
+      applyClipMode(next, wanted, /* freshClip */ true);
       next.fadeIn(0.15).play();
     }
     currentAnim.current = wanted;
@@ -102,11 +107,26 @@ export const Character = ({ velocity, alive }: Props) => {
   );
 };
 
-// Freeze a Run action at a mid-stride frame so airborne players read as
-// "leaping" rather than legs running through the air.
-const freezeOnLeapPose = (action: AnimationAction): void => {
-  // Run clip is ~0.7s; mid-stride lands around 0.35s with one leg planted.
-  action.time = 0.35;
-  action.paused = true;
-  action.timeScale = 0;
+// Run clip is ~0.7s; mid-stride lands around 0.35s with one leg planted —
+// reads as a leap silhouette when frozen.
+const JUMP_POSE_TIME = 0.35;
+
+// Configures an action for the given state. `freshClip` is true when the
+// action's clip is changing (e.g., Idle → Jump) and we want to start the
+// leap pose at a known frame; false when the same clip is being re-used
+// (Run ↔ Jump) and we want to leave the cycle's playhead alone to avoid
+// a visible time-snap.
+const applyClipMode = (
+  action: AnimationAction,
+  mode: ClipKey,
+  freshClip: boolean,
+): void => {
+  if (mode === 'Jump') {
+    if (freshClip) action.time = JUMP_POSE_TIME;
+    action.paused = true;
+    action.timeScale = 0;
+  } else {
+    action.paused = false;
+    action.timeScale = 1;
+  }
 };
