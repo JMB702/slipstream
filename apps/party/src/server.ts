@@ -83,8 +83,12 @@ export default class SlipstreamServer implements Party.Server {
         const now = this.serverTime();
         for (const frame of msg.frames) {
           if (frame.seq <= player.lastSeenSeq) continue;
-          applyInput(player, frame, now);
-          if (frame.fire) this.pendingFire.add(player.id);
+          // No firing while sprinting — silently demote sprint when fire is
+          // pressed. Player walks-while-firing instead of running-while-firing.
+          const effectiveFrame =
+            frame.fire && frame.sprint ? { ...frame, sprint: false } : frame;
+          applyInput(player, effectiveFrame, now);
+          if (effectiveFrame.fire) this.pendingFire.add(player.id);
         }
         return;
       }

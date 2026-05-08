@@ -57,7 +57,9 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         forward: live.forward,
         right: live.right,
         jump: live.jump,
-        sprint: live.sprint,
+        // Can't sprint while firing. Server enforces this too; doing it here
+        // keeps client prediction matching the server's authoritative state.
+        sprint: live.sprint && !fired,
         fire: fired,
         reload: live.reload,
         yaw: live.yaw,
@@ -138,6 +140,7 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         alive={me?.alive ?? true}
         health={me?.health ?? 100}
         velocity={me?.velocity ?? [0, 0, 0]}
+        playerId={myId ?? null}
       />
     </group>
   );

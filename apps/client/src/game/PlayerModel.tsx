@@ -1,6 +1,6 @@
 import { Billboard, Text } from '@react-three/drei';
 import { Suspense } from 'react';
-import { PLAYER, type Vec3 } from '@slipstream/shared';
+import { PLAYER, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { Character } from './Character.js';
 
 interface Props {
@@ -8,14 +8,15 @@ interface Props {
   alive: boolean;
   health: number;
   velocity: Vec3;
+  playerId: PlayerId | null;
 }
 
-export const PlayerModel = ({ name, alive, health, velocity }: Props) => {
+export const PlayerModel = ({ name, alive, health, velocity, playerId }: Props) => {
   if (!alive) return null;
   return (
     <group>
       <Suspense fallback={<CapsuleFallback />}>
-        <Character velocity={velocity} alive={alive} />
+        <Character velocity={velocity} alive={alive} playerId={playerId} />
       </Suspense>
       <Billboard position={[0, PLAYER.height / 2 + 0.4, 0]}>
         <Text fontSize={0.25} color="white" outlineWidth={0.02} outlineColor="black">

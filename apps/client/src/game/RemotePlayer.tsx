@@ -77,6 +77,7 @@ export const RemotePlayer = ({ id }: Props) => {
         alive={renderState.current.alive}
         health={renderState.current.health}
         velocity={renderState.current.velocity}
+        playerId={id}
       />
     </group>
   );
