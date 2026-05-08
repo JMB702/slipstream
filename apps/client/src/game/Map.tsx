@@ -1,4 +1,16 @@
-import { MAP, OBSTACLES } from '@slipstream/shared';
+import { HOUSE_WALLS, MAP, SCATTERED_OBSTACLES, type Obstacle } from '@slipstream/shared';
+
+const renderObstacle = (o: Obstacle, key: number, color: string) => (
+  <mesh
+    key={key}
+    position={o.pos as unknown as [number, number, number]}
+    castShadow
+    receiveShadow
+  >
+    <boxGeometry args={[o.halfSize[0] * 2, o.halfSize[1] * 2, o.halfSize[2] * 2]} />
+    <meshStandardMaterial color={color} />
+  </mesh>
+);
 
 export const Arena = () => {
   const half = MAP.size / 2;
@@ -10,6 +22,7 @@ export const Arena = () => {
         <meshStandardMaterial color="#1a1f2e" />
       </mesh>
 
+      {/* Map perimeter walls */}
       {([
         [half, 2, 0, 1, 4, MAP.size],
         [-half, 2, 0, 1, 4, MAP.size],
@@ -22,17 +35,11 @@ export const Arena = () => {
         </mesh>
       ))}
 
-      {OBSTACLES.map((o, i) => (
-        <mesh
-          key={i}
-          position={o.pos as unknown as [number, number, number]}
-          castShadow
-          receiveShadow
-        >
-          <boxGeometry args={[o.halfSize[0] * 2, o.halfSize[1] * 2, o.halfSize[2] * 2]} />
-          <meshStandardMaterial color="#3a4055" />
-        </mesh>
-      ))}
+      {/* House — tan walls so the structure reads against the floor */}
+      {HOUSE_WALLS.map((o, i) => renderObstacle(o, i, '#8a7a5c'))}
+
+      {/* Scattered cover */}
+      {SCATTERED_OBSTACLES.map((o, i) => renderObstacle(o, i, '#3a4055'))}
 
       <gridHelper args={[MAP.size, MAP.size, '#2a3050', '#1a2030']} position={[0, 0.01, 0]} />
     </group>
