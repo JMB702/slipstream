@@ -122,6 +122,13 @@ const applyClipMode = (
   mode: ClipKey,
   freshClip: boolean,
 ): void => {
+  // CRITICAL: three.js automatically sets enabled=false when a fadeOut
+  // completes (interpolant value reaches 0). Subsequent fadeIn calls
+  // schedule a weight interpolant but do NOT re-enable the action, so
+  // its effective weight stays at 0 — and the model shows the bind pose
+  // (T-pose). Force enabled=true on every transition.
+  action.enabled = true;
+
   if (mode === 'Jump') {
     if (freshClip) action.time = JUMP_POSE_TIME;
     action.paused = true;
