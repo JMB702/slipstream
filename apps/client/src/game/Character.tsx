@@ -41,10 +41,18 @@ export const Character = ({ velocity, alive }: Props) => {
     [],
   );
 
-  // Single effect drives the animation state machine. Picking the right clip
-  // and ensuring it's actually running both happen here, so a re-create of
-  // the `actions` object can't leave a previously-played action stopped with
-  // no one to restart it.
+  // Start the default (Idle) animation once actions are available. Stable
+  // deps in practice — drei keeps the actions object identity steady — so
+  // this runs once per mount.
+  useEffect(() => {
+    const idle = actions[clipNames.Idle];
+    if (idle) idle.reset().fadeIn(0.15).play();
+  }, [actions, clipNames]);
+
+  // State machine. ONLY acts on actual transitions — no defensive isRunning
+  // check, because that misfires for paused actions (Jump's frozen pose),
+  // continuously resetting weight to 0 via fadeIn and producing the bind
+  // pose (T-pose) blend.
   useEffect(() => {
     if (!alive) {
       for (const a of Object.values(actions)) a?.fadeOut(0.2);
@@ -61,31 +69,22 @@ export const Character = ({ velocity, alive }: Props) => {
           ? 'Walk'
           : 'Run';
 
-    const next = actions[clipNames[wanted]];
-
-    // Same logical state — defensive resume only; don't disturb time/weight.
-    if (currentAnim.current === wanted) {
-      if (next && !next.isRunning()) {
-        applyClipMode(next, wanted, /* freshClip */ false);
-        next.fadeIn(0.15).play();
-      }
-      return;
-    }
+    if (currentAnim.current === wanted) return;
 
     const prev = actions[clipNames[currentAnim.current]];
+    const next = actions[clipNames[wanted]];
     const sameClip = prev === next;
 
-    // Same underlying clip (Run ↔ Jump) — toggle freeze state in place.
-    // Don't reset time and don't crossfade: the action keeps its current
-    // weight (1) and continues from where it was paused.
     if (sameClip && next) {
+      // Same underlying clip (Run ↔ Jump) — toggle freeze state in place.
+      // No reset, no fade: action keeps its weight (1) and continues from
+      // where it was paused.
       applyClipMode(next, wanted, /* freshClip */ false);
-      if (!next.isRunning()) next.play();
+      next.play();
       currentAnim.current = wanted;
       return;
     }
 
-    // Different clip — full crossfade.
     if (prev) prev.fadeOut(0.15);
     if (next) {
       applyClipMode(next, wanted, /* freshClip */ true);
