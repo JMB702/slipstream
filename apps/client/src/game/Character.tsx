@@ -1,6 +1,7 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AnimationClip,
   BoxGeometry,
   CylinderGeometry,
   Group,
@@ -86,7 +87,13 @@ const CLIP_NAMES: Record<ClipKey, string | null> = {
 export const Character = ({ velocity, alive, playerId }: Props) => {
   const gltf = useGLTF(MODEL_URL);
   const cloned = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
-  const { actions } = useAnimations(gltf.animations, cloned);
+  // Mixamo animations carry root motion in the Hips bone's position track —
+  // the character translates forward during Walk/Run, jumps in Y during a
+  // Jump clip, etc. Our server controls position authoritatively, so leaving
+  // these in causes the model to drift forward and snap back on every
+  // snapshot. Strip them here, keeping all rotation tracks intact.
+  const animations = useMemo(() => stripRootMotion(gltf.animations), [gltf.animations]);
+  const { actions } = useAnimations(animations, cloned);
   const currentAnim = useRef<ClipKey>('Idle');
 
   // Fire state: true while we want to be playing the Fire clip. Cleared by
@@ -249,6 +256,18 @@ const GUN_POS_Z = 0.12;
 const GUN_ROT_X = 0;
 const GUN_ROT_Y = Math.PI / 2;
 const GUN_ROT_Z = 0;
+
+// Drop position tracks on the Hips (root) bone from every clip, replacing
+// each clip with a copy whose tracks are filtered. Keeps rotation tracks so
+// limbs still animate; removes only the translation that competes with the
+// server's authoritative position.
+const stripRootMotion = (clips: readonly AnimationClip[]): AnimationClip[] =>
+  clips.map((clip) => {
+    const tracks = clip.tracks.filter(
+      (t) => !/Hips\.position$/i.test(t.name) && !/Hips\.scale$/i.test(t.name),
+    );
+    return new AnimationClip(clip.name, clip.duration, tracks, clip.blendMode);
+  });
 
 const findRightHandBone = (root: Object3D): Object3D | null => {
   let best: Object3D | null = null;
