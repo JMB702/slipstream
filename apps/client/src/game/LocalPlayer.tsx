@@ -14,6 +14,7 @@ import { createInput } from './input.js';
 import { setActiveInput, setPredictedState, consumeFire } from './local-state.js';
 import { findAimTarget, stampAimedAt } from './aim-state.js';
 import { hapticFire } from './haptics.js';
+import { playDryFire } from './sfx.js';
 import { PlayerModel } from './PlayerModel.js';
 
 interface Props {
@@ -59,7 +60,11 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         const myId = useGame.getState().myId;
         const snap = useGame.getState().snapshots[useGame.getState().snapshots.length - 1];
         const meNow = myId ? snap?.players.get(myId) : undefined;
-        if (meNow && meNow.alive && meNow.ammo > 0) hapticFire();
+        if (meNow && meNow.alive && meNow.ammo > 0) {
+          hapticFire();
+        } else if (meNow && meNow.alive && meNow.ammo <= 0) {
+          playDryFire();
+        }
       }
       const frame: InputFrame = {
         seq: seqRef.current++,

@@ -1,5 +1,5 @@
 import { useAnimations, useGLTF } from '@react-three/drei';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AnimationClip,
@@ -22,6 +22,7 @@ import {
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER, type CharacterId, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { useGame } from '../store.js';
+import { playGunshot, playHitMarker, playReload } from './sfx.js';
 
 // =============================================================================
 // Mixamo rifle-aim character swap workflow
@@ -191,6 +192,7 @@ export const Character = ({ velocity, yaw, reloading, vaulting, alive, playerId,
   // after a couple dozen seconds of play. Server-assigned `at` is monotonic.
   const lastAtRef = useRef<number>(-1);
   const muzzleFlashUntilRef = useRef(0);
+  const camera = useThree((s) => s.camera);
 
   useEffect(() => {
     if (!playerId) return;
@@ -198,20 +200,49 @@ export const Character = ({ velocity, yaw, reloading, vaulting, alive, playerId,
     lastAtRef.current = initial.length ? Math.max(...initial.map((e) => e.at)) : -1;
     return useGame.subscribe((state) => {
       let firedThisBatch = false;
+      let lastShotOrigin: Vec3 | null = null;
+      let hitThisBatch = false;
       let maxAt = lastAtRef.current;
+      const myId = state.myId;
       for (const ev of state.events) {
         if (ev.at <= lastAtRef.current) continue;
         if (ev.at > maxAt) maxAt = ev.at;
-        if (ev.type === 'shot' && ev.shooterId === playerId) firedThisBatch = true;
+        if (ev.type === 'shot' && ev.shooterId === playerId) {
+          firedThisBatch = true;
+          lastShotOrigin = ev.origin;
+          if (playerId === myId && ev.hit) hitThisBatch = true;
+        }
       }
       lastAtRef.current = maxAt;
       if (!firedThisBatch) return;
+      if (lastShotOrigin) {
+        const dx = camera.position.x - lastShotOrigin[0];
+        const dy = camera.position.y - lastShotOrigin[1];
+        const dz = camera.position.z - lastShotOrigin[2];
+        playGunshot(Math.sqrt(dx * dx + dy * dy + dz * dz));
+      }
+      if (hitThisBatch) playHitMarker();
       setFiring(true);
       muzzleFlashUntilRef.current = performance.now() + MUZZLE_FLASH_MS;
       if (fireTimeoutRef.current) clearTimeout(fireTimeoutRef.current);
       fireTimeoutRef.current = setTimeout(() => setFiring(false), FIRE_HOLD_MS);
     });
-  }, [playerId]);
+  }, [playerId, camera]);
+
+  const prevReloadingRef = useRef(false);
+  useEffect(() => {
+    if (reloading && !prevReloadingRef.current && playerId) {
+      const snap = useGame.getState().snapshots[useGame.getState().snapshots.length - 1];
+      const me = snap?.players.get(playerId);
+      if (me) {
+        const dx = camera.position.x - me.position[0];
+        const dy = camera.position.y - me.position[1];
+        const dz = camera.position.z - me.position[2];
+        playReload(Math.sqrt(dx * dx + dy * dy + dz * dz));
+      }
+    }
+    prevReloadingRef.current = reloading;
+  }, [reloading, playerId, camera]);
 
   // Start the default (Idle) animation once actions are available.
   useEffect(() => {
