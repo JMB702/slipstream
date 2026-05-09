@@ -1,7 +1,14 @@
 import { Billboard, Text } from '@react-three/drei';
-import { Suspense } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { Suspense, useState } from 'react';
 import { PLAYER, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { Character } from './Character.js';
+import { getLastAimedAt } from './aim-state.js';
+import { useGame } from '../store.js';
+
+// How long an enemy's nameplate stays visible after the local reticle leaves
+// them. Matches the spec: tag on aim, fade out after a 3s grace.
+const NAME_REVEAL_HOLD_MS = 3000;
 
 interface Props {
   name: string;
@@ -10,10 +17,23 @@ interface Props {
   velocity: Vec3;
   yaw: number;
   reloading: boolean;
+  vaulting: boolean;
   playerId: PlayerId | null;
 }
 
-export const PlayerModel = ({ name, alive, health, velocity, yaw, reloading, playerId }: Props) => {
+export const PlayerModel = ({
+  name,
+  alive,
+  health,
+  velocity,
+  yaw,
+  reloading,
+  vaulting,
+  playerId,
+}: Props) => {
+  const myId = useGame((s) => s.myId);
+  const isSelf = playerId !== null && playerId === myId;
+  const showsName = playerId !== null && !isSelf;
   if (!alive) return null;
   return (
     <group>
@@ -22,17 +42,34 @@ export const PlayerModel = ({ name, alive, health, velocity, yaw, reloading, pla
           velocity={velocity}
           yaw={yaw}
           reloading={reloading}
+          vaulting={vaulting}
           alive={alive}
           playerId={playerId}
         />
       </Suspense>
       <Billboard position={[0, PLAYER.height / 2 + 0.35, 0]}>
-        <Text fontSize={0.14} color="white" outlineWidth={0.012} outlineColor="black">
-          {name}
-        </Text>
+        {showsName && <EnemyNameLabel name={name} playerId={playerId} />}
         {health < PLAYER.maxHealth && <NameplateHealthBar health={health} />}
       </Billboard>
     </group>
+  );
+};
+
+// Reveals the enemy's name on aim, holds it for NAME_REVEAL_HOLD_MS after the
+// local reticle leaves them. Edge-detected re-render so we don't pay React
+// reconciliation cost every frame — only when visibility actually flips.
+const EnemyNameLabel = ({ name, playerId }: { name: string; playerId: PlayerId }) => {
+  const [visible, setVisible] = useState(false);
+  useFrame(() => {
+    const last = getLastAimedAt(playerId);
+    const should = last > 0 && performance.now() - last < NAME_REVEAL_HOLD_MS;
+    if (should !== visible) setVisible(should);
+  });
+  if (!visible) return null;
+  return (
+    <Text fontSize={0.14} color="white" outlineWidth={0.012} outlineColor="black">
+      {name}
+    </Text>
   );
 };
 

@@ -12,6 +12,7 @@ import {
 import { useGame } from '../store.js';
 import { createInput } from './input.js';
 import { setActiveInput, setPredictedState, consumeFire } from './local-state.js';
+import { findAimTarget, stampAimedAt } from './aim-state.js';
 import { PlayerModel } from './PlayerModel.js';
 
 interface Props {
@@ -89,6 +90,27 @@ export const LocalPlayer = ({ send, myName }: Props) => {
       return;
     }
 
+    // While vaulting, the server tweens position; client prediction would
+    // fight the tween (movement input is ignored server-side anyway). Snap
+    // to whatever the latest snapshot says and skip the buffer replay.
+    if (me.vaulting) {
+      setPredictedState({
+        position: me.position,
+        velocity: [0, 0, 0],
+        yaw: me.yaw,
+        pitch: me.pitch,
+        grounded: false,
+      });
+      ref.current.position.set(me.position[0], me.position[1], me.position[2]);
+      ref.current.rotation.y = me.yaw;
+      // Keep the buffer drained so when the vault ends we don't replay stale jumps.
+      const ackedSeq = me.lastSeenSeq;
+      while (inputBuffer.current.length > 0 && inputBuffer.current[0]!.seq <= ackedSeq) {
+        inputBuffer.current.shift();
+      }
+      return;
+    }
+
     const ackedSeq = me.lastSeenSeq;
     while (inputBuffer.current.length > 0 && inputBuffer.current[0]!.seq <= ackedSeq) {
       inputBuffer.current.shift();
@@ -127,6 +149,13 @@ export const LocalPlayer = ({ send, myName }: Props) => {
 
     ref.current.position.set(state.position[0], state.position[1], state.position[2]);
     ref.current.rotation.y = state.yaw;
+
+    // Aim-target detection for enemy nameplate reveal. Mirrors server fire
+    // raycast — same eye height, same hit radius, same wall occlusion. Stamps
+    // the aim-state module so every PlayerModel can read its own last-aimed-at
+    // time without a global re-render.
+    const aimedId = findAimTarget(state.position, state.yaw, state.pitch, myId, lastSnap.players.values());
+    if (aimedId) stampAimedAt(aimedId, performance.now());
   });
 
   const myId = useGame((s) => s.myId);
@@ -142,6 +171,7 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         velocity={me?.velocity ?? [0, 0, 0]}
         yaw={me?.yaw ?? 0}
         reloading={me?.reloading ?? false}
+        vaulting={me?.vaulting ?? false}
         playerId={myId ?? null}
       />
     </group>
