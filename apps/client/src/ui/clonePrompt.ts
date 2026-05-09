@@ -46,11 +46,9 @@ When I ask for a change:
 
 DEPLOYMENT
 
-Once I merge to main on the upstream repo:
-- Vercel auto-deploys the client.
-- A GitHub Action redeploys the PartyKit server when apps/party or packages/shared changes.
+Deployment is intentionally NOT automatic. Merging to main does not push your change to the live game on its own. The maintainer reviews the merged commits and runs the deploy manually when they're satisfied — Vercel for the client, PartyKit for the server. This is the gate that keeps random PRs from shipping straight to production.
 
-You don't run any deploy commands yourself. Don't add 'vercel --prod' or 'partykit deploy' steps to your workflow.
+You don't run any deploy commands yourself. Don't add 'vercel --prod' or 'partykit deploy' steps to your workflow. If a PR description claims "this auto-deploys on merge", that's wrong — point it out.
 
 GROUND RULES
 

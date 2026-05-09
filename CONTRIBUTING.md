@@ -7,9 +7,11 @@ Slipstream is set up as a collaborative AI-coding playground. Players paste a pr
 1. **Anyone can fork and propose.** The repo is public. Fork it, branch, code, push, and open a PR back to `JMB702/slipstream:main`.
 2. **Pull requests are required.** Direct pushes to `main` are blocked by branch protection. Even the maintainer goes through PRs in normal cases.
 3. **A code owner must approve.** GitHub branch protection requires approval from someone listed in [`.github/CODEOWNERS`](./.github/CODEOWNERS) before a PR can merge. Today that's `@JMB702`. Trusted devs can be added to that file over time.
-4. **On merge, the live game updates automatically.**
-   - The Vercel client redeploys on every push to `main` (GitHub integration is connected).
-   - The PartyKit server is redeployed manually by the maintainer when `apps/party/` or `packages/shared/` changes — that step requires the maintainer's PartyKit credentials.
+4. **On merge, the change is NOT live yet.** Deployment is a separate, manual step the maintainer does after reviewing the merged commits:
+   - Client: `vercel --prod` (Vercel CLI, maintainer's account).
+   - Server (PartyKit): `cd apps/party && npx partykit deploy --var ACCESS_CODE=<code>` when `apps/party/` or `packages/shared/` changes.
+
+   This is intentional. Code-owner review on a PR is one gate, but the maintainer also wants a final eyes-on-it pass before anything reaches the live game. There is no auto-deploy on merge.
 
 ## What this means in practice
 
