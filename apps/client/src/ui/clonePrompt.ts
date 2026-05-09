@@ -1,50 +1,63 @@
 // Self-contained prompt copied to the clipboard from the lobby button.
 // Designed to drop into a fresh AI coding agent (Claude Code, Cursor, etc.)
-// and walk it from "I have nothing" to "I have a deployed multiplayer game".
+// and set up a collaborative loop: the agent clones, then takes the user's
+// change requests, makes a feature branch, opens a PR back to the upstream
+// repo. When the maintainer merges, the live game updates automatically
+// (Vercel + PartyKit GitHub Action).
 //
 // Editing notes:
-// - Use plain ASCII; some agents stumble on smart quotes or em dashes when
-//   quoting blocks back at you.
-// - Keep the GitHub URL canonical so search/agents can verify it.
-// - Don't bake in the live access code — the agent picks one for the new
-//   deployment.
-export const CLONE_PROMPT = `I want to deploy my own copy of Slipstream, a 3D browser-based multiplayer arena shooter. Clone it from GitHub and walk me through deploying it. Don't skip the deploy step.
+// - Plain ASCII; some agents stumble on smart quotes / em dashes when
+//   re-quoting prompts.
+// - Canonical GitHub URL so the agent can verify it.
+// - Don't bake in the live access code — players type that themselves.
+export const CLONE_PROMPT = `You are going to help me ship changes to a live multiplayer game called Slipstream. The repo is public and merges to main auto-deploy. We work as a pair: I describe what I want, you make the change as a pull request.
 
 Repo: https://github.com/JMB702/slipstream
+Live game: https://slipstream-sand.vercel.app
 
-Steps to follow in order:
+ONE-TIME SETUP
 
-1. Clone + install
-   - git clone https://github.com/JMB702/slipstream.git && cd slipstream
-   - Make sure Node 20+ and pnpm 10+ are available (corepack enable && corepack prepare pnpm@latest --activate works on most setups).
+1. Make sure 'gh' CLI and 'pnpm' are installed and you are signed into GitHub.
+2. Fork and clone:
+   - gh repo fork JMB702/slipstream --clone --remote
+   - cd slipstream
    - pnpm install
-
-2. Verify the build is clean before deploying
+3. Sanity check:
    - pnpm typecheck
    - pnpm build
+4. (Optional) Run locally so you can verify changes before pushing:
+   - Create apps/party/.env with: ACCESS_CODE=<any 4-digit code>
+   - pnpm dev   (client on :5173, party on :1999)
+5. Read the root CLAUDE.md. It documents the architecture (server-authoritative sim on PartyKit, R3F client on Vercel, pnpm monorepo with apps/client, apps/party, packages/shared) and the gotchas list. Do not skip it.
 
-3. (Optional) Local dev so I can confirm it runs
-   - Create apps/party/.env with: ACCESS_CODE=<pick any 4-digit code>
-   - pnpm dev  (client on :5173, party on :1999)
-   - Open http://localhost:5173 in two browser tabs, enter the same room and access code in both.
+WORKING LOOP
 
-4. Deploy the multiplayer server (PartyKit on Cloudflare Workers)
-   - cd apps/party
-   - npx partykit login   (browser auth — I'll click through)
-   - npx partykit deploy --var ACCESS_CODE=<same code as step 3>
-   - Capture the deployed host. It looks like: slipstream.<my-partykit-handle>.partykit.dev
+When I ask for a change:
+1. Confirm you understand the request in one or two sentences before writing code.
+2. Sync your fork: git fetch upstream && git checkout main && git merge upstream/main && git push origin main
+3. Create a feature branch: git checkout -b <descriptive-kebab-name>
+4. Make the change. Keep edits scoped to what I asked for; don't reformat unrelated files. Follow the conventions in CLAUDE.md.
+5. Verify locally: pnpm typecheck (always) and pnpm dev for behavioral changes.
+6. Commit with a message that explains WHY, not just what.
+7. Push the branch: git push origin <branch>
+8. Open a pull request against JMB702/slipstream main:
+   - gh pr create --repo JMB702/slipstream --title "<short title>" --body "<what + why + how to test>"
+9. Give me the PR URL. I review and merge.
 
-5. Deploy the client (Vercel)
-   - cd back to the repo root
-   - vercel link    (interactive — I'll pick the project name and team)
-   - vercel env add VITE_PARTYKIT_HOST production
-     value: <the partykit host from step 4, no protocol>
-   - vercel --prod
+DEPLOYMENT
 
-6. Smoke test the live URL you get from vercel
-   - Open it, type the 4-digit access code, join.
-   - Open a second browser/tab with the same room name and code; confirm both see each other on the minimap.
+Once I merge to main on the upstream repo:
+- Vercel auto-deploys the client.
+- A GitHub Action redeploys the PartyKit server when apps/party or packages/shared changes.
 
-When you're done, give me the live URL and the access code so I can share them.
+You don't run any deploy commands yourself. Don't add 'vercel --prod' or 'partykit deploy' steps to your workflow.
 
-Project context for your orientation: pnpm monorepo with three packages — apps/client (Vite + React Three Fiber), apps/party (PartyKit server, server-authoritative simulation), packages/shared (wire types + deterministic sim used by both sides). The repo's root CLAUDE.md has the architecture, gotchas, and conventions — read it before changing any code.`;
+GROUND RULES
+
+- Public repo. Don't commit secrets. The .env files in apps/party are gitignored — never copy ACCESS_CODE or similar into source.
+- Don't push to JMB702/slipstream main directly even if you have access. Always go through a PR.
+- If a request is ambiguous, ask one clarifying question before writing code.
+- If a change spans the wire format (packages/shared/src/state.ts or messages.ts), call that out in the PR description so I know clients and server need to redeploy together.
+- For Mixamo / animation work, follow the asset pipeline section in CLAUDE.md exactly. The merge_mixamo.py script is the source of truth.
+
+Acknowledge by listing the steps you'll take for the first change I ask for.`;

@@ -1,0 +1,24 @@
+# CODEOWNERS for Slipstream
+#
+# Anyone listed here can approve and merge pull requests against main, after
+# branch protection's required-review check is satisfied. Pull requests from
+# accounts NOT listed here cannot be merged by themselves — a code owner has
+# to review and approve first.
+#
+# To add a trusted dev:
+#   - Add their GitHub @handle on a path line below.
+#   - GitHub usernames only — no display names, no emails.
+#   - The repo owner does NOT need to also invite them as a collaborator
+#     unless you want them to push branches directly to this repo. Most
+#     contributors should fork and PR.
+#
+# Format: <path-glob>  <space>  <@user1> <@user2> ...
+# Last matching line wins, so list narrowest paths last.
+
+# Default: every file is owned by the maintainer.
+*           @JMB702
+
+# Examples for future trusted contributors:
+# /apps/client/   @JMB702 @some-trusted-dev
+# /apps/party/    @JMB702
+# /packages/      @JMB702
