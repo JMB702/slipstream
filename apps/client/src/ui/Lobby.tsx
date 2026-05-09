@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
-import { MATCH } from '@slipstream/shared';
+import { MATCH, isBotDifficulty, type BotDifficulty } from '@slipstream/shared';
 import { useGame } from '../store.js';
 import { CLONE_PROMPT } from './clonePrompt.js';
 
 interface Props {
-  onJoin(args: { name: string; room: string; killTarget: number; accessCode: string }): void;
+  onJoin(args: {
+    name: string;
+    room: string;
+    killTarget: number;
+    accessCode: string;
+    botCount: number;
+    botDifficulty: BotDifficulty;
+  }): void;
 }
 
 const ACCESS_CODE_LEN = 4;
@@ -13,6 +20,8 @@ export const Lobby = ({ onJoin }: Props) => {
   const [name, setName] = useState(() => loadName());
   const [room, setRoom] = useState('arena-1');
   const [killTarget, setKillTarget] = useState<string>(String(MATCH.defaultKillTarget));
+  const [botCount, setBotCount] = useState<string>(String(MATCH.defaultBotCount));
+  const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>(MATCH.defaultBotDifficulty);
   const [accessCode, setAccessCode] = useState(() => loadCode());
   const [localError, setLocalError] = useState<string | null>(null);
   const closeReason = useGame((s) => s.lastCloseReason);
@@ -63,6 +72,39 @@ export const Lobby = ({ onJoin }: Props) => {
         </label>
 
         <label style={label}>
+          Bots
+          <input
+            style={input}
+            type="number"
+            inputMode="numeric"
+            min={MATCH.minBotCount}
+            max={MATCH.maxBotCount}
+            value={botCount}
+            onChange={(e) => setBotCount(e.target.value.replace(/[^0-9]/g, ''))}
+          />
+          <span style={hint}>
+            Enemy AI in the arena. {MATCH.minBotCount}–{MATCH.maxBotCount}. Locked by first player.
+          </span>
+        </label>
+
+        <label style={label}>
+          Bot difficulty
+          <select
+            style={input}
+            value={botDifficulty}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (isBotDifficulty(v)) setBotDifficulty(v);
+            }}
+          >
+            <option value="easy">Easy</option>
+            <option value="normal">Normal</option>
+            <option value="hard">Hard</option>
+          </select>
+          <span style={hint}>Easy: slow aim, big jitter, miss often. Hard: lethal.</span>
+        </label>
+
+        <label style={label}>
           Access code
           <input
             style={input}
@@ -99,6 +141,10 @@ export const Lobby = ({ onJoin }: Props) => {
             const target = Number.isFinite(parsed)
               ? Math.max(MATCH.minKillTarget, Math.min(MATCH.maxKillTarget, parsed))
               : MATCH.defaultKillTarget;
+            const parsedBots = Math.floor(Number(botCount));
+            const finalBots = Number.isFinite(parsedBots)
+              ? Math.max(MATCH.minBotCount, Math.min(MATCH.maxBotCount, parsedBots))
+              : MATCH.defaultBotCount;
             useGame.getState().setCloseReason(null);
             setLocalError(null);
             onJoin({
@@ -106,6 +152,8 @@ export const Lobby = ({ onJoin }: Props) => {
               room: room.trim() || 'arena-1',
               killTarget: target,
               accessCode,
+              botCount: finalBots,
+              botDifficulty,
             });
           }}
         >

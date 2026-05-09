@@ -1,7 +1,7 @@
 import { useFrame } from '@react-three/fiber';
-import { useMemo, useRef } from 'react';
+import { useRef } from 'react';
 import { Group } from 'three';
-import { NET, type PlayerId, type PlayerState, type Vec3 } from '@slipstream/shared';
+import { NET, type PlayerId } from '@slipstream/shared';
 import { useGame } from '../store.js';
 import { PlayerModel } from './PlayerModel.js';
 
@@ -9,22 +9,17 @@ interface Props {
   id: PlayerId;
 }
 
+// Subscribe to the latest snapshot's view of this player so React re-renders
+// when alive/reloading/vaulting/etc. change. Without this, the previous
+// implementation buffered everything in a ref inside useFrame — the ref
+// mutation never triggered a re-render, so PlayerModel saw stale flags
+// (most visibly: bots never played the Death animation because alive=true
+// was frozen at first mount).
 export const RemotePlayer = ({ id }: Props) => {
   const ref = useRef<Group>(null);
-  const renderState = useRef<{
-    name: string;
-    alive: boolean;
-    health: number;
-    velocity: Vec3;
-    yaw: number;
-    reloading: boolean;
-  }>({
-    name: '',
-    alive: true,
-    health: 100,
-    velocity: [0, 0, 0],
-    yaw: 0,
-    reloading: false,
+  const player = useGame((s) => {
+    const last = s.snapshots[s.snapshots.length - 1];
+    return last?.players.get(id);
   });
 
   useFrame(() => {
@@ -65,41 +60,26 @@ export const RemotePlayer = ({ id }: Props) => {
 
     ref.current.position.set(lerp(ax, bx, t), lerp(ay, by, t), lerp(az, bz, t));
     ref.current.rotation.y = lerpAngle(a?.yaw ?? target.yaw, target.yaw, t);
-
-    renderState.current.name = target.name;
-    renderState.current.alive = target.alive;
-    renderState.current.health = target.health;
-    renderState.current.velocity = target.velocity;
-    renderState.current.yaw = target.yaw;
-    renderState.current.reloading = target.reloading;
   });
 
-  const initialName = useMemo(() => latestName(id), [id]);
+  if (!player) return <group ref={ref} />;
 
   return (
     <group ref={ref}>
       <PlayerModel
-        name={renderState.current.name || initialName}
-        alive={renderState.current.alive}
-        health={renderState.current.health}
-        velocity={renderState.current.velocity}
-        yaw={renderState.current.yaw}
-        reloading={renderState.current.reloading}
+        name={player.name}
+        alive={player.alive}
+        health={player.health}
+        velocity={player.velocity}
+        yaw={player.yaw}
+        reloading={player.reloading}
+        vaulting={player.vaulting}
         playerId={id}
+        isBot={player.isBot}
+        characterId={player.characterId}
       />
     </group>
   );
-};
-
-const latestName = (id: PlayerId): string => {
-  const snaps = useGame.getState().snapshots;
-  for (let i = snaps.length - 1; i >= 0; i--) {
-    const snap = snaps[i];
-    if (!snap) continue;
-    const p: PlayerState | undefined = snap.players.get(id);
-    if (p) return p.name;
-  }
-  return 'Player';
 };
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;

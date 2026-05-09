@@ -13,6 +13,7 @@ import { useGame } from '../store.js';
 import { createInput } from './input.js';
 import { setActiveInput, setPredictedState, consumeFire } from './local-state.js';
 import { findAimTarget, stampAimedAt } from './aim-state.js';
+import { hapticFire } from './haptics.js';
 import { PlayerModel } from './PlayerModel.js';
 
 interface Props {
@@ -52,6 +53,14 @@ export const LocalPlayer = ({ send, myName }: Props) => {
       accumulator.current = 0;
 
       const fired = consumeFire();
+      if (fired) {
+        // Server is authoritative on ammo and life; don't buzz on dry-fire
+        // pulls or trigger-mashing while dead.
+        const myId = useGame.getState().myId;
+        const snap = useGame.getState().snapshots[useGame.getState().snapshots.length - 1];
+        const meNow = myId ? snap?.players.get(myId) : undefined;
+        if (meNow && meNow.alive && meNow.ammo > 0) hapticFire();
+      }
       const frame: InputFrame = {
         seq: seqRef.current++,
         dtMs: sendDt,
@@ -91,18 +100,27 @@ export const LocalPlayer = ({ send, myName }: Props) => {
     }
 
     // While vaulting, the server tweens position; client prediction would
-    // fight the tween (movement input is ignored server-side anyway). Snap
-    // to whatever the latest snapshot says and skip the buffer replay.
+    // fight the tween (movement input is ignored server-side anyway). Lerp
+    // the wrapper toward the latest snapshot position rather than snapping —
+    // snapshots arrive at 20 Hz so a hard set produces visible step jitter
+    // at the 60 Hz render rate.
     if (me.vaulting) {
+      const cx = ref.current.position.x;
+      const cy = ref.current.position.y;
+      const cz = ref.current.position.z;
+      const lerpAmt = 0.35;
+      const nx = cx + (me.position[0] - cx) * lerpAmt;
+      const ny = cy + (me.position[1] - cy) * lerpAmt;
+      const nz = cz + (me.position[2] - cz) * lerpAmt;
+      ref.current.position.set(nx, ny, nz);
+      ref.current.rotation.y = me.yaw;
       setPredictedState({
-        position: me.position,
+        position: [nx, ny, nz],
         velocity: [0, 0, 0],
         yaw: me.yaw,
         pitch: me.pitch,
         grounded: false,
       });
-      ref.current.position.set(me.position[0], me.position[1], me.position[2]);
-      ref.current.rotation.y = me.yaw;
       // Keep the buffer drained so when the vault ends we don't replay stale jumps.
       const ackedSeq = me.lastSeenSeq;
       while (inputBuffer.current.length > 0 && inputBuffer.current[0]!.seq <= ackedSeq) {

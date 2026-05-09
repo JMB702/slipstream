@@ -1,5 +1,7 @@
 import type * as Party from 'partykit/server';
 import {
+  BOT,
+  BOT_PROFILES,
   MATCH,
   MAX_PLAYERS,
   PLAYER,
@@ -8,6 +10,8 @@ import {
   WEAPON,
   decode,
   encode,
+  isBotDifficulty,
+  type BotDifficulty,
   type ClientMessage,
   type GameEvent,
   type GameSnapshot,
@@ -19,9 +23,11 @@ import {
   integrateIdle,
   maybeRespawn,
   regenHealth,
+  tickVault,
   tryFire,
 } from './simulation.js';
 import { initialPlayer, randomSpawn, type ServerPlayer } from './state.js';
+import { ensureBotDefaults, tickBot } from './bots/controller.js';
 
 export default class SlipstreamServer implements Party.Server {
   readonly options: Party.ServerOptions = {
@@ -41,6 +47,11 @@ export default class SlipstreamServer implements Party.Server {
   // target; resetAt fires once and clears both, starting a fresh round.
   private killTarget: number = MATCH.defaultKillTarget;
   private killTargetLocked = false;
+  // Bot count is locked alongside killTarget by the first joiner. Locked
+  // separately so refreshing the host doesn't change the in-progress match.
+  private botCount: number = MATCH.defaultBotCount;
+  private botCountLocked = false;
+  private botDifficulty: BotDifficulty = MATCH.defaultBotDifficulty;
   private winnerId: string | null = null;
   private resetAt: number | null = null;
 
@@ -86,8 +97,27 @@ export default class SlipstreamServer implements Party.Server {
       }
       this.killTargetLocked = true;
     }
-    const player = initialPlayer(conn.id, conn.id, name, randomSpawn(), this.serverTime());
+    if (!this.botCountLocked) {
+      const raw = url.searchParams.get('botCount');
+      const parsed = raw == null ? NaN : Math.floor(Number(raw));
+      if (Number.isFinite(parsed)) {
+        this.botCount = Math.max(
+          MATCH.minBotCount,
+          Math.min(MATCH.maxBotCount, parsed),
+        );
+      }
+      const rawDiff = url.searchParams.get('botDifficulty') ?? '';
+      if (isBotDifficulty(rawDiff)) this.botDifficulty = rawDiff;
+      // Difficulty is locked alongside botCount — refreshing the host can't
+      // soften live opponents mid-match.
+      this.botCountLocked = true;
+    }
+    const player = initialPlayer(conn.id, conn.id, name, randomSpawn(), this.serverTime(), {
+      isBot: false,
+      characterId: 'soldier',
+    });
     this.players.set(conn.id, player);
+    this.spawnBots(this.serverTime());
 
     // If the room had emptied out, timers were stopped — restart them now.
     this.startTimers();
@@ -166,13 +196,53 @@ export default class SlipstreamServer implements Party.Server {
   onClose(conn: Party.Connection): void {
     this.players.delete(conn.id);
     this.pendingFire.delete(conn.id);
+    // If the only humans are gone, drop the bots too — no point simulating an
+    // empty arena. They respawn with the next human via spawnBots().
+    if (this.humanCount() === 0) {
+      this.removeAllBots();
+    }
     if (this.players.size === 0) {
       this.stopTimers();
-      // Empty room — release the killTarget lock so the next first-joiner
-      // can pick a new target.
+      // Empty room — release the killTarget and botCount locks so the next
+      // first-joiner can pick fresh values.
       this.killTargetLocked = false;
+      this.botCountLocked = false;
       this.winnerId = null;
       this.resetAt = null;
+    }
+  }
+
+  private humanCount(): number {
+    let n = 0;
+    for (const p of this.players.values()) {
+      if (!p.isBot) n += 1;
+    }
+    return n;
+  }
+
+  private spawnBots(now: number): void {
+    const desired = Math.min(this.botCount, MAX_PLAYERS - this.humanCount());
+    let existing = 0;
+    for (const p of this.players.values()) if (p.isBot) existing += 1;
+    const toAdd = Math.max(0, desired - existing);
+    for (let i = 0; i < toAdd; i++) {
+      const id = `bot-${Math.random().toString(36).slice(2, 9)}`;
+      const name = BOT.names[(existing + i) % BOT.names.length] ?? `Bot${i + 1}`;
+      const bot = initialPlayer(id, id, name, randomSpawn(), now, {
+        isBot: true,
+        characterId: 'ch35',
+      });
+      ensureBotDefaults(bot, now);
+      this.players.set(id, bot);
+    }
+  }
+
+  private removeAllBots(): void {
+    for (const [id, p] of this.players) {
+      if (p.isBot) {
+        this.players.delete(id);
+        this.pendingFire.delete(id);
+      }
     }
   }
 
@@ -188,6 +258,25 @@ export default class SlipstreamServer implements Party.Server {
       finishReload(p, now);
       maybeRespawn(p, now);
       regenHealth(p, now);
+      // Vault tween (if any) drives position; must run before integrateIdle
+      // since integrateIdle is no-op while vaulting and we want position fresh.
+      tickVault(p, now);
+    }
+
+    // Bots produce input frames here, BEFORE integrateIdle so their applyInput
+    // call updates lastIntegratedAt — otherwise integrateIdle would slap a
+    // duplicate physics step on top of the controller's frame.
+    if (this.winnerId === null) {
+      const profile =
+        BOT_PROFILES[this.botDifficulty] ?? BOT_PROFILES[MATCH.defaultBotDifficulty];
+      for (const p of all) {
+        if (!p.isBot) continue;
+        const fired = tickBot(p, all, now, profile);
+        if (fired) this.pendingFire.add(p.id);
+      }
+    }
+
+    for (const p of all) {
       // Run physics for any time gap that hasn't already been integrated by an
       // arriving input — keeps idle/AFK/just-spawned players from floating.
       integrateIdle(p, now);
@@ -247,6 +336,7 @@ export default class SlipstreamServer implements Party.Server {
       p.lastDamagedAt = 0;
       p.lastIntegratedAt = now;
       p.grounded = true;
+      if (p.isBot) ensureBotDefaults(p, now);
     }
     this.winnerId = null;
     this.resetAt = null;
@@ -303,7 +393,10 @@ const stripServerOnly = (p: ServerPlayer) => ({
   ammo: p.ammo,
   reloading: p.reloading,
   reloadDoneAt: p.reloadDoneAt,
+  vaulting: p.vaulting,
   kills: p.kills,
   deaths: p.deaths,
   lastSeenSeq: p.lastSeenSeq,
+  isBot: p.isBot,
+  characterId: p.characterId,
 });

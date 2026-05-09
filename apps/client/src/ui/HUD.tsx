@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useGame } from '../store.js';
 import { PLAYER, WEAPON, type KillEvent } from '@slipstream/shared';
+import { hapticDamage } from '../game/haptics.js';
 
 const HIT_MARKER_MS = 250;
 
@@ -30,6 +31,7 @@ export const HUD = () => {
     lastAtRef.current = initial.length ? Math.max(...initial.map((e) => e.at)) : -1;
     return useGame.subscribe((state) => {
       let hitMine = false;
+      let tookDamage = false;
       let maxAt = lastAtRef.current;
       for (const ev of state.events) {
         if (ev.at <= lastAtRef.current) continue;
@@ -37,9 +39,17 @@ export const HUD = () => {
         if (ev.type === 'shot' && ev.shooterId === myId && ev.hit !== null) {
           hitMine = true;
         }
+        if (ev.type === 'shot' && ev.hit === myId && ev.shooterId !== myId) {
+          tookDamage = true;
+        }
       }
       lastAtRef.current = maxAt;
       if (hitMine) setHitAt(performance.now());
+      if (tookDamage) {
+        const snap = state.snapshots[state.snapshots.length - 1];
+        const meNow = snap?.players.get(myId);
+        if (meNow && meNow.alive) hapticDamage();
+      }
     });
   }, [myId]);
 

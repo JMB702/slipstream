@@ -5,6 +5,9 @@ export interface InputState {
   sprint: boolean;
   fire: boolean;
   reload: boolean;
+  // Hold-to-aim flag (RMB on PC, LT/L2 on gamepad). Camera reads this to
+  // pull in for ADS — purely a presentation flag, not gameplay-affecting.
+  aiming: boolean;
   yaw: number;
   pitch: number;
   pointerLocked: boolean;
@@ -22,28 +25,59 @@ export const createInput = (canvas: HTMLCanvasElement): {
     sprint: false,
     fire: false,
     reload: false,
+    aiming: false,
     yaw: 0,
     pitch: 0,
     pointerLocked: false,
   };
 
+  // Movement and buttons are merged from two sources (keyboard, gamepad).
+  // Each source writes to its own slot; mergeAxes/mergeButtons recompute the
+  // public state. This keeps either source from clobbering the other.
+  let kbForward = 0;
+  let kbRight = 0;
+  let kbJump = false;
+  let kbSprint = false;
+  let kbReload = false;
+  let mouseAim = false;
+
+  let gpForward = 0;
+  let gpRight = 0;
+  let gpJump = false;
+  let gpSprint = false;
+  let gpReload = false;
+  let gpAim = false;
+
+  const mergeAxes = () => {
+    state.forward = clampUnit(kbForward + gpForward);
+    state.right = clampUnit(kbRight + gpRight);
+  };
+  const mergeButtons = () => {
+    state.jump = kbJump || gpJump;
+    state.sprint = kbSprint || gpSprint;
+    state.reload = kbReload || gpReload;
+    state.aiming = mouseAim || gpAim;
+  };
+
   const keys = new Set<string>();
 
-  const updateAxes = () => {
-    state.forward = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
-    state.right = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
-    state.jump = keys.has('Space');
-    state.sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
-    state.reload = keys.has('KeyR');
+  const updateKbAxes = () => {
+    kbForward = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
+    kbRight = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+    kbJump = keys.has('Space');
+    kbSprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+    kbReload = keys.has('KeyR');
+    mergeAxes();
+    mergeButtons();
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
     keys.add(e.code);
-    updateAxes();
+    updateKbAxes();
   };
   const onKeyUp = (e: KeyboardEvent) => {
     keys.delete(e.code);
-    updateAxes();
+    updateKbAxes();
   };
 
   let dropNextMouseMove = false;
@@ -61,14 +95,24 @@ export const createInput = (canvas: HTMLCanvasElement): {
     // can't whip the camera around.
     const dx = clampMovement(e.movementX);
     const dy = clampMovement(e.movementY);
-    state.yaw -= dx * 0.0025;
-    state.pitch -= dy * 0.0025;
-    const lim = Math.PI / 2 - 0.01;
-    if (state.pitch > lim) state.pitch = lim;
-    if (state.pitch < -lim) state.pitch = -lim;
+    // While aiming, drop look sensitivity so the higher-zoom view still tracks
+    // smoothly. Standard FPS convention — keeps muscle memory consistent.
+    const sens = state.aiming ? ADS_SENSITIVITY : 1;
+    state.yaw -= dx * 0.0025 * sens;
+    state.pitch -= dy * 0.0025 * sens;
+    clampPitch();
   };
 
   const onMouseDown = (e: MouseEvent) => {
+    if (e.button === 2) {
+      // RMB → aim. Only engages while pointer is locked so a misclick before
+      // entering the canvas doesn't snap into ADS.
+      if (state.pointerLocked) {
+        mouseAim = true;
+        mergeButtons();
+      }
+      return;
+    }
     if (e.button !== 0) return;
     if (!state.pointerLocked) {
       canvas.requestPointerLock();
@@ -77,16 +121,114 @@ export const createInput = (canvas: HTMLCanvasElement): {
     state.fire = true;
   };
 
-  const onMouseUp = (_e: MouseEvent) => {
+  const onMouseUp = (e: MouseEvent) => {
+    if (e.button === 2) {
+      mouseAim = false;
+      mergeButtons();
+      return;
+    }
     // intentionally do not clear state.fire — consumeFire is the only consumer
   };
 
   const onPointerLockChange = () => {
     state.pointerLocked = document.pointerLockElement === canvas;
     if (state.pointerLocked) dropNextMouseMove = true;
+    // Releasing pointer lock should drop ADS; otherwise the camera stays
+    // zoomed-in after the player Alt-Tabs or hits Escape mid-aim.
+    if (!state.pointerLocked && mouseAim) {
+      mouseAim = false;
+      mergeButtons();
+    }
   };
 
   const onContextMenu = (e: MouseEvent) => e.preventDefault();
+
+  const clampPitch = () => {
+    const lim = Math.PI / 2 - 0.01;
+    if (state.pitch > lim) state.pitch = lim;
+    if (state.pitch < -lim) state.pitch = -lim;
+  };
+
+  // Gamepad polling. Runs every animation frame; samples the first connected
+  // gamepad and applies its inputs into the merged state. RT is edge-triggered
+  // for semi-auto fire, mirroring mouse-click semantics in onMouseDown. L3 is
+  // edge-triggered as a sprint toggle (click-on / click-off).
+  let prevTriggerPressed = false;
+  let prevSprintPressed = false;
+  let sprintToggled = false;
+  let lastPollMs = performance.now();
+  let rafHandle = 0;
+
+  const pollGamepad = () => {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastPollMs) / 1000);
+    lastPollMs = now;
+
+    const pad = pickGamepad();
+    if (!pad) {
+      if (gpForward !== 0 || gpRight !== 0 || gpJump || gpSprint || gpReload || gpAim) {
+        gpForward = 0;
+        gpRight = 0;
+        gpJump = false;
+        gpSprint = false;
+        gpReload = false;
+        gpAim = false;
+        mergeAxes();
+        mergeButtons();
+      }
+      prevTriggerPressed = false;
+      prevSprintPressed = false;
+      sprintToggled = false;
+      rafHandle = requestAnimationFrame(pollGamepad);
+      return;
+    }
+
+    const lx = pad.axes[0] ?? 0;
+    const ly = pad.axes[1] ?? 0;
+    const rx = pad.axes[2] ?? 0;
+    const ry = pad.axes[3] ?? 0;
+
+    const left = applyRadialDeadzone(lx, ly, GP_DEADZONE);
+    gpRight = left.x;
+    // Standard mapping: stick up is -Y. Forward should be +1 when stick is up.
+    gpForward = -left.y;
+
+    const right = applyRadialDeadzone(rx, ry, GP_DEADZONE);
+    if (right.x !== 0 || right.y !== 0) {
+      const yawIn = signedExpo(right.x, GP_LOOK_EXPO);
+      const pitchIn = signedExpo(right.y, GP_LOOK_EXPO);
+      // Same ADS slowdown applied to mouse — keeps muscle memory consistent
+      // across input methods so a player who's aiming on either feels at home.
+      const sens = state.aiming ? ADS_SENSITIVITY : 1;
+      state.yaw -= yawIn * GP_LOOK_YAW_RATE * dt * sens;
+      state.pitch -= pitchIn * GP_LOOK_PITCH_RATE * dt * sens;
+      clampPitch();
+    }
+
+    gpJump = isPressed(pad, 0);
+    gpReload = isPressed(pad, 2);
+
+    const sprintPressed = isPressed(pad, 10);
+    if (sprintPressed && !prevSprintPressed) sprintToggled = !sprintToggled;
+    prevSprintPressed = sprintPressed;
+    gpSprint = sprintToggled;
+    // LT (left trigger, standard mapping idx 6) is hold-to-aim. Most pad
+    // drivers report LT as analog .value, not .pressed, so check both.
+    gpAim =
+      isPressed(pad, 6) || (pad.buttons[6]?.value ?? 0) >= GP_TRIGGER_THRESHOLD;
+
+    const triggerPressed =
+      isPressed(pad, 7) || (pad.buttons[7]?.value ?? 0) >= GP_TRIGGER_THRESHOLD;
+    if (triggerPressed && !prevTriggerPressed) {
+      state.fire = true;
+    }
+    prevTriggerPressed = triggerPressed;
+
+    mergeAxes();
+    mergeButtons();
+
+    rafHandle = requestAnimationFrame(pollGamepad);
+  };
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
@@ -95,6 +237,7 @@ export const createInput = (canvas: HTMLCanvasElement): {
   window.addEventListener('mouseup', onMouseUp);
   document.addEventListener('pointerlockchange', onPointerLockChange);
   canvas.addEventListener('contextmenu', onContextMenu);
+  rafHandle = requestAnimationFrame(pollGamepad);
 
   return {
     state,
@@ -112,6 +255,7 @@ export const createInput = (canvas: HTMLCanvasElement): {
       window.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('pointerlockchange', onPointerLockChange);
       canvas.removeEventListener('contextmenu', onContextMenu);
+      if (rafHandle) cancelAnimationFrame(rafHandle);
     },
   };
 };
@@ -122,4 +266,51 @@ const clampMovement = (v: number): number => {
   if (v > MAX_MOUSE_DELTA) return MAX_MOUSE_DELTA;
   if (v < -MAX_MOUSE_DELTA) return -MAX_MOUSE_DELTA;
   return v;
+};
+
+const clampUnit = (v: number): number => {
+  if (!Number.isFinite(v)) return 0;
+  if (v > 1) return 1;
+  if (v < -1) return -1;
+  return v;
+};
+
+const ADS_SENSITIVITY = 0.5;
+const GP_DEADZONE = 0.15;
+const GP_LOOK_YAW_RATE = 3.0;
+const GP_LOOK_PITCH_RATE = 2.2;
+const GP_LOOK_EXPO = 2;
+const GP_TRIGGER_THRESHOLD = 0.5;
+
+const pickGamepad = (): Gamepad | null => {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (const p of pads) {
+    if (p && p.connected) return p;
+  }
+  return null;
+};
+
+const isPressed = (pad: Gamepad, idx: number): boolean => {
+  const b = pad.buttons[idx];
+  return !!b && b.pressed;
+};
+
+// Radial deadzone: zero out within the inner circle, then rescale the
+// remaining magnitude to [0, 1] preserving direction. Avoids the square-gate
+// feel of per-axis deadzones.
+const applyRadialDeadzone = (
+  x: number,
+  y: number,
+  dz: number,
+): { x: number; y: number } => {
+  const mag = Math.hypot(x, y);
+  if (mag <= dz) return { x: 0, y: 0 };
+  const scaled = (mag - dz) / (1 - dz);
+  const clamped = scaled > 1 ? 1 : scaled;
+  return { x: (x / mag) * clamped, y: (y / mag) * clamped };
+};
+
+const signedExpo = (v: number, expo: number): number => {
+  const sign = v < 0 ? -1 : 1;
+  return sign * Math.pow(Math.abs(v), expo);
 };

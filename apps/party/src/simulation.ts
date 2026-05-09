@@ -1,12 +1,16 @@
 import {
+  MAP,
   PLAYER,
   TICK_MS,
+  VAULT,
   WEAPON,
+  WINDOWS,
   applyMovement,
   raycastObstacles,
   type GameEvent,
   type InputFrame,
   type Vec3,
+  type WindowDef,
 } from '@slipstream/shared';
 import type { ServerPlayer } from './state.js';
 import { randomSpawn } from './state.js';
@@ -15,6 +19,33 @@ export const applyInput = (player: ServerPlayer, input: InputFrame, now: number)
   if (!player.alive) {
     player.lastSeenSeq = input.seq;
     return;
+  }
+  // Vaulting: server-driven tween owns position; just keep yaw/pitch fresh
+  // so the camera follows the player's view, and ack the input.
+  if (player.vaultEndAt !== null) {
+    player.yaw = input.yaw;
+    player.pitch = input.pitch;
+    player.lastSeenSeq = input.seq;
+    return;
+  }
+  // Edge-trigger: if jump was pressed AND we're standing near a window we
+  // can vault through, start the vault instead of running normal movement.
+  if (input.jump && player.grounded) {
+    const plan = planVault(player);
+    if (plan !== null) {
+      player.vaultFrom = plan.from;
+      player.vaultTo = plan.to;
+      player.vaultEndAt = now + VAULT.durationMs;
+      player.vaulting = true;
+      player.position = plan.from;
+      player.velocity = [0, 0, 0];
+      player.grounded = false;
+      player.yaw = input.yaw;
+      player.pitch = input.pitch;
+      player.lastSeenSeq = input.seq;
+      player.lastIntegratedAt = now;
+      return;
+    }
   }
   const next = applyMovement(player, input);
   player.position = next.position;
@@ -29,6 +60,81 @@ export const applyInput = (player: ServerPlayer, input: InputFrame, now: number)
     player.reloading = true;
     player.reloadDoneAt = now + WEAPON.reloadMs;
   }
+};
+
+interface VaultPlan {
+  from: Vec3;
+  to: Vec3;
+}
+
+const planVault = (player: ServerPlayer): VaultPlan | null => {
+  const fwdX = -Math.sin(player.yaw);
+  const fwdZ = -Math.cos(player.yaw);
+  let best: { window: WindowDef; throughDist: number; signedThrough: number } | null = null;
+
+  for (const w of WINDOWS) {
+    const along = w.axis === 'x' ? player.position[0] : player.position[2];
+    const through = w.axis === 'x' ? player.position[2] : player.position[0];
+    const fwdThrough = w.axis === 'x' ? fwdZ : fwdX;
+    const offsetThrough = through - w.wallCoord;
+
+    if (Math.abs(offsetThrough) > VAULT.triggerRange) continue;
+    if (Math.abs(along - w.openingCenter) > w.openingHalfWidth + VAULT.lateralSlack) continue;
+    // Must face TOWARD the wall: forward's through-axis sign opposite to player's offset
+    if (Math.sign(fwdThrough) === Math.sign(offsetThrough)) continue;
+    if (Math.sign(offsetThrough) === 0) continue; // standing exactly on the wall — no clear direction
+    if (Math.abs(fwdThrough) < VAULT.facingMin) continue;
+
+    if (best === null || Math.abs(offsetThrough) < best.throughDist) {
+      best = { window: w, throughDist: Math.abs(offsetThrough), signedThrough: offsetThrough };
+    }
+  }
+  if (best === null) return null;
+
+  const { window: w, signedThrough } = best;
+  // Don't lateral-snap on trigger — that visibly slides the player sideways
+  // at vault start. Tween from the player's actual current position to the
+  // opening-centered exit on the opposite side, so any lateral correction
+  // happens smoothly across the vault duration.
+  const exitSign = -Math.sign(signedThrough);
+  const toAlong = w.openingCenter;
+  const toThrough = w.wallCoord + exitSign * VAULT.exitOffset;
+  const y = MAP.spawnHeight;
+  const from: Vec3 = [player.position[0], y, player.position[2]];
+  const to: Vec3 =
+    w.axis === 'x' ? [toAlong, y, toThrough] : [toThrough, y, toAlong];
+  return { from, to };
+};
+
+// Drive the position tween while a vault is in progress. Called every tick
+// from the room's tick loop. When the vault ends, snaps to destination and
+// clears the state so normal movement resumes.
+export const tickVault = (player: ServerPlayer, now: number): void => {
+  if (player.vaultEndAt === null || player.vaultFrom === null || player.vaultTo === null) return;
+  if (now >= player.vaultEndAt) {
+    player.position = player.vaultTo;
+    player.velocity = [0, 0, 0];
+    player.grounded = true;
+    player.vaultFrom = null;
+    player.vaultTo = null;
+    player.vaultEndAt = null;
+    player.vaulting = false;
+    player.lastIntegratedAt = now;
+    return;
+  }
+  const total = VAULT.durationMs;
+  const remaining = player.vaultEndAt - now;
+  const t = Math.max(0, Math.min(1, 1 - remaining / total));
+  const f = player.vaultFrom;
+  const to = player.vaultTo;
+  // Sin arc so the player rises and lands without a discontinuity.
+  const arc = Math.sin(t * Math.PI) * VAULT.arcHeight;
+  player.position = [
+    f[0] + (to[0] - f[0]) * t,
+    f[1] + (to[1] - f[1]) * t + arc,
+    f[2] + (to[2] - f[2]) * t,
+  ];
+  player.lastIntegratedAt = now;
 };
 
 // Fill physics gaps for players who aren't sending inputs (idle, AFK, just spawned).
@@ -47,6 +153,8 @@ export const integrateIdle = (player: ServerPlayer, now: number): void => {
     player.lastIntegratedAt = now;
     return;
   }
+  // Vault tween owns position; don't apply gravity over the top of it.
+  if (player.vaultEndAt !== null) return;
   const dtMs = now - player.lastIntegratedAt;
   if (dtMs < IDLE_THRESHOLD_MS) return;
   const idleFrame: InputFrame = {
@@ -89,6 +197,10 @@ export const maybeRespawn = (player: ServerPlayer, now: number): void => {
     player.grounded = true;
     player.lastIntegratedAt = now;
     player.lastDamagedAt = 0;
+    player.vaultFrom = null;
+    player.vaultTo = null;
+    player.vaultEndAt = null;
+    player.vaulting = false;
   }
 };
 
@@ -109,7 +221,7 @@ export const tryFire = (
   others: ServerPlayer[],
   now: number,
 ): GameEvent[] => {
-  if (!shooter.alive || shooter.reloading || shooter.ammo <= 0) return [];
+  if (!shooter.alive || shooter.reloading || shooter.vaultEndAt !== null || shooter.ammo <= 0) return [];
 
   shooter.ammo -= 1;
 

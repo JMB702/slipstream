@@ -2,6 +2,7 @@ import PartySocket from 'partysocket';
 import {
   decode,
   encode,
+  type BotDifficulty,
   type ClientMessage,
   type ServerMessage,
 } from '@slipstream/shared';
@@ -24,6 +25,8 @@ export const connect = (
   name: string,
   killTarget?: number,
   accessCode?: string,
+  botCount?: number,
+  botDifficulty?: BotDifficulty,
 ): NetClient => {
   const store = useGame.getState();
   store.setConn('connecting');
@@ -32,6 +35,12 @@ export const connect = (
   const query: Record<string, string> = { name };
   if (killTarget != null && Number.isFinite(killTarget)) {
     query.killTarget = String(Math.floor(killTarget));
+  }
+  if (botCount != null && Number.isFinite(botCount)) {
+    query.botCount = String(Math.floor(botCount));
+  }
+  if (botDifficulty) {
+    query.botDifficulty = botDifficulty;
   }
   if (accessCode) {
     query.accessCode = accessCode;

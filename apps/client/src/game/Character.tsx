@@ -7,6 +7,8 @@ import {
   CylinderGeometry,
   Euler,
   Group,
+  LoopOnce,
+  LoopRepeat,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -18,7 +20,7 @@ import {
   type AnimationAction,
 } from 'three';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { PLAYER, type PlayerId, type Vec3 } from '@slipstream/shared';
+import { PLAYER, type CharacterId, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { useGame } from '../store.js';
 
 // =============================================================================
@@ -56,15 +58,20 @@ import { useGame } from '../store.js';
 //     a Fire clip yet)
 // =============================================================================
 
-const MODEL_URL = '/models/Soldier.glb';
-useGLTF.preload(MODEL_URL);
+const MODEL_URLS: Record<CharacterId, string> = {
+  soldier: '/models/Soldier.glb',
+  ch35: '/models/Ch35.glb',
+};
+for (const url of Object.values(MODEL_URLS)) useGLTF.preload(url);
 
 interface Props {
   velocity: Vec3;
   yaw: number;
   reloading: boolean;
+  vaulting: boolean;
   alive: boolean;
   playerId: PlayerId | null;
+  characterId?: CharacterId;
 }
 
 const WALK_RUN_THRESHOLD = (PLAYER.walkSpeed + PLAYER.sprintSpeed) / 2;
@@ -88,6 +95,8 @@ type Dir = 'F' | 'FR' | 'R' | 'BR' | 'B' | 'BL' | 'L' | 'FL';
 type ClipKey =
   | 'Idle'
   | 'Jump'
+  | 'Vault'
+  | 'Death'
   | 'Fire'
   | 'FireWalk'
   | 'Reload'
@@ -101,6 +110,8 @@ type ClipKey =
 const CLIP_NAMES: Record<ClipKey, string | null> = {
   Idle: 'Idle',
   Jump: 'RunF', // re-uses sprint-forward frozen mid-stride; replace with a real Jump clip later
+  Vault: 'Vault',
+  Death: 'Death',
   Fire: 'Fire',
   FireWalk: 'FireWalk',
   Reload: 'Reload',
@@ -124,12 +135,22 @@ const CLIP_NAMES: Record<ClipKey, string | null> = {
   RunFL: 'RunFL',
 };
 
+// Override Vault: the Mixamo clip is 4.2s including a long approach-run
+// before the actual leap. Skip the run-up by starting the action at this
+// offset (in seconds of clip time), and play the rest at VAULT_TIMESCALE so
+// the visible leap+landing fits VAULT.durationMs in real time.
+//   real_duration = (4.2 - VAULT_START_TIME) / VAULT_TIMESCALE
+const VAULT_START_TIME = 1.0;
+const VAULT_TIMESCALE = 2.1;
+
 // Per-clip playback speed multiplier. Mixamo's stock locomotion clips animate
 // at their own pace, slower than our walkSpeed/sprintSpeed in world space, so
 // doubling the playback rate roughly matches the cycle to actual ground speed.
 const CLIP_TIMESCALE: Record<ClipKey, number> = {
   Idle: 1,
   Jump: 0, // unused (Jump path freezes the action)
+  Vault: VAULT_TIMESCALE,
+  Death: 1,
   Fire: 1,
   FireWalk: 1,
   Reload: 1,
@@ -148,8 +169,8 @@ const directionFromVelocity = (lf: number, lr: number): Dir => {
   return DIRS_BY_OCTANT[idx]!;
 };
 
-export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) => {
-  const gltf = useGLTF(MODEL_URL);
+export const Character = ({ velocity, yaw, reloading, vaulting, alive, playerId, characterId = 'soldier' }: Props) => {
+  const gltf = useGLTF(MODEL_URLS[characterId] ?? MODEL_URLS.soldier);
   const cloned = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
   // Mixamo animations carry root motion in the Hips bone's position track —
   // the character translates forward during Walk/Run, jumps in Y during a
@@ -254,11 +275,6 @@ export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) 
 
   // State machine. Acts only on actual transitions.
   useEffect(() => {
-    if (!alive) {
-      for (const a of Object.values(actions)) a?.fadeOut(0.2);
-      return;
-    }
-
     // Decompose world velocity into facing-relative components. Server
     // convention (sim.ts): vx = -sin(yaw)*fwd + cos(yaw)*right, vz =
     // -cos(yaw)*fwd - sin(yaw)*right. Inverting gives the formulas below.
@@ -273,13 +289,22 @@ export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) 
     const reloadClip = CLIP_NAMES.Reload ? actions[CLIP_NAMES.Reload] : undefined;
     const reloadWalkClip = CLIP_NAMES.ReloadWalk ? actions[CLIP_NAMES.ReloadWalk] : undefined;
     const reloadRunClip = CLIP_NAMES.ReloadRun ? actions[CLIP_NAMES.ReloadRun] : undefined;
+    const vaultClip = CLIP_NAMES.Vault ? actions[CLIP_NAMES.Vault] : undefined;
+    const deathClip = CLIP_NAMES.Death ? actions[CLIP_NAMES.Death] : undefined;
 
-    // Priority (when grounded): Reload > Fire > locomotion. Airborne overrides
-    // both — jumping mid-reload or mid-fire looks worse than letting Jump play.
-    // ReloadRun / ReloadWalk / Reload are picked by speed band; FireWalk vs
-    // Fire is moving vs standing (no run-fire variant).
+    // Priority: Death > Vault > Reload > Fire > Jump (airborne) > locomotion.
+    // Death wins over everything — once the player is killed, every other
+    // animation is overridden until they respawn.
     let desired: ClipKey;
-    if (reloading && !airborne && speed >= WALK_RUN_THRESHOLD && reloadRunClip) {
+    if (!alive && deathClip) {
+      desired = 'Death';
+    } else if (!alive) {
+      // No Death clip in the GLB — fade everything out (legacy behavior).
+      for (const a of Object.values(actions)) a?.fadeOut(0.2);
+      return;
+    } else if (vaulting && vaultClip) {
+      desired = 'Vault';
+    } else if (reloading && !airborne && speed >= WALK_RUN_THRESHOLD && reloadRunClip) {
       desired = 'ReloadRun';
     } else if (reloading && !airborne && speed >= IDLE_SPEED && reloadWalkClip) {
       desired = 'ReloadWalk';
@@ -326,9 +351,11 @@ export const Character = ({ velocity, yaw, reloading, alive, playerId }: Props) 
       next.fadeIn(0.15).play();
     }
     currentAnim.current = wanted;
-  }, [velocity, yaw, reloading, alive, firing, actions]);
+  }, [velocity, yaw, reloading, vaulting, alive, firing, actions]);
 
-  if (!alive) return null;
+  // Note: deliberately NOT returning null when !alive — we want the corpse
+  // to remain visible playing the Death clip until the server respawns the
+  // player (PLAYER.respawnMs).
 
   // Mixamo character: origin at feet, native forward is +z. Our world has
   // forward = -z at yaw=0, so we apply a 180° y rotation to align them.
@@ -394,9 +421,23 @@ const applyClipMode = (
 
   action.paused = false;
   action.timeScale = CLIP_TIMESCALE[mode] ?? 1;
-  if (freshClip && (mode === 'Fire' || mode === 'Reload' || mode === 'ReloadWalk' || mode === 'ReloadRun')) {
-    // Restart these clips from the beginning so each shot/reload replays cleanly.
+  if (freshClip && (mode === 'Fire' || mode === 'Reload' || mode === 'ReloadWalk' || mode === 'ReloadRun' || mode === 'Death')) {
+    // Restart these clips from the beginning so each shot/reload/death replays cleanly.
     action.time = 0;
+  }
+  if (freshClip && mode === 'Vault') {
+    // Skip the approach-run portion at the start of the Mixamo clip.
+    action.time = VAULT_START_TIME;
+  }
+  // Vault and Death are one-shot — looping would restart the leap mid-air or
+  // the death mid-fall. Hold the final pose at the end (clampWhenFinished)
+  // until the server clears the state (vault completes / player respawns).
+  if (mode === 'Vault' || mode === 'Death') {
+    action.loop = LoopOnce;
+    action.clampWhenFinished = true;
+  } else {
+    action.loop = LoopRepeat;
+    action.clampWhenFinished = false;
   }
 };
 
@@ -422,8 +463,15 @@ const GUN_SCALE = 1;
 // each clip with a copy whose tracks are filtered. Keeps rotation tracks so
 // limbs still animate; removes only the translation that competes with the
 // server's authoritative position.
+//
+// Exception: clips whose visual REQUIRES the Hips Y descent — Death drops the
+// body to the floor via Hips.y. Stripping it leaves the corpse hovering at
+// standing height. We keep all Hips translation for these (X/Z drift is
+// negligible for a death-in-place clip).
+const KEEP_ROOT_MOTION = new Set(['Death']);
 const stripRootMotion = (clips: readonly AnimationClip[]): AnimationClip[] =>
   clips.map((clip) => {
+    if (KEEP_ROOT_MOTION.has(clip.name)) return clip;
     const tracks = clip.tracks.filter(
       (t) => !/Hips\.position$/i.test(t.name) && !/Hips\.scale$/i.test(t.name),
     );

@@ -2,6 +2,8 @@ export type PlayerId = string;
 
 export type Vec3 = readonly [number, number, number];
 
+export type CharacterId = 'soldier' | 'ch35';
+
 export interface PlayerState {
   id: PlayerId;
   name: string;
@@ -15,9 +17,12 @@ export interface PlayerState {
   ammo: number;
   reloading: boolean;
   reloadDoneAt: number | null;
+  vaulting: boolean;
   kills: number;
   deaths: number;
   lastSeenSeq: number;
+  isBot: boolean;
+  characterId: CharacterId;
 }
 
 export interface GameSnapshot {

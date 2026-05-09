@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { BotDifficulty } from '@slipstream/shared';
 import { connect, type NetClient } from './net/client.js';
 import { Scene } from './game/Scene.js';
 import { Lobby } from './ui/Lobby.js';
@@ -17,13 +18,17 @@ export const App = () => {
     room,
     killTarget,
     accessCode,
+    botCount,
+    botDifficulty,
   }: {
     name: string;
     room: string;
     killTarget: number;
     accessCode: string;
+    botCount: number;
+    botDifficulty: BotDifficulty;
   }) => {
-    const c = connect(room, name, killTarget, accessCode);
+    const c = connect(room, name, killTarget, accessCode, botCount, botDifficulty);
     setClient(c);
     setName(name);
   };

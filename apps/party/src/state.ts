@@ -1,4 +1,6 @@
-import { MAP, OBSTACLES, PLAYER, type PlayerState, type Vec3 } from '@slipstream/shared';
+import { MAP, OBSTACLES, PLAYER, type CharacterId, type PlayerState, type Vec3 } from '@slipstream/shared';
+
+export type BotState = 'patrol' | 'hunt' | 'engage' | 'reposition' | 'dead';
 
 export interface ServerPlayer extends PlayerState {
   connectionId: string;
@@ -11,6 +13,30 @@ export interface ServerPlayer extends PlayerState {
   // Wall-clock time (ms, server frame) the player last took damage.
   // Health regen kicks in once `now - lastDamagedAt >= PLAYER.regenDelayMs`.
   lastDamagedAt: number;
+  // Window-vault state. When `vaultEndAt` is non-null, the server is tweening
+  // the player from `vaultFrom` to `vaultTo` and ignores movement input until
+  // `now >= vaultEndAt`. The wire-visible `vaulting` boolean on PlayerState
+  // mirrors `vaultEndAt !== null`.
+  vaultFrom: Vec3 | null;
+  vaultTo: Vec3 | null;
+  vaultEndAt: number | null;
+  // Per-bot controller state. None of these cross the wire — stripped in
+  // server.ts before broadcast. All optional so humans pay no extra cost.
+  botState?: BotState;
+  botPath?: Vec3[];
+  botPathIdx?: number;
+  botGoal?: Vec3 | null;
+  botTargetId?: string | null;
+  botLastReplanAt?: number;
+  botLastTargetCheckAt?: number;
+  botLastLosCheckAt?: number;
+  botLastSawTargetAt?: number;
+  botEngagedAt?: number;
+  botInputSeq?: number;
+  botStuckSince?: number;
+  botSawTargetSince?: number;
+  botStrafeSign?: number;
+  botStrafeFlipAt?: number;
 }
 
 export const initialPlayer = (
@@ -19,6 +45,7 @@ export const initialPlayer = (
   name: string,
   spawn: Vec3,
   now: number,
+  options?: { isBot?: boolean; characterId?: CharacterId },
 ): ServerPlayer => ({
   id,
   connectionId,
@@ -33,13 +60,19 @@ export const initialPlayer = (
   ammo: 30,
   reloading: false,
   reloadDoneAt: null,
+  vaulting: false,
   kills: 0,
   deaths: 0,
   lastSeenSeq: 0,
+  isBot: options?.isBot ?? false,
+  characterId: options?.characterId ?? 'soldier',
   pendingInputSeq: 0,
   grounded: true,
   lastIntegratedAt: now,
   lastDamagedAt: 0,
+  vaultFrom: null,
+  vaultTo: null,
+  vaultEndAt: null,
 });
 
 export const randomSpawn = (): Vec3 => {

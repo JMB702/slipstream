@@ -1,7 +1,7 @@
 import { Billboard, Text } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { Suspense, useState } from 'react';
-import { PLAYER, type PlayerId, type Vec3 } from '@slipstream/shared';
+import { PLAYER, type CharacterId, type PlayerId, type Vec3 } from '@slipstream/shared';
 import { Character } from './Character.js';
 import { getLastAimedAt } from './aim-state.js';
 import { useGame } from '../store.js';
@@ -19,6 +19,8 @@ interface Props {
   reloading: boolean;
   vaulting: boolean;
   playerId: PlayerId | null;
+  isBot?: boolean;
+  characterId?: CharacterId;
 }
 
 export const PlayerModel = ({
@@ -30,11 +32,12 @@ export const PlayerModel = ({
   reloading,
   vaulting,
   playerId,
+  isBot,
+  characterId,
 }: Props) => {
   const myId = useGame((s) => s.myId);
   const isSelf = playerId !== null && playerId === myId;
-  const showsName = playerId !== null && !isSelf;
-  if (!alive) return null;
+  const showsName = alive && playerId !== null && !isSelf;
   return (
     <group>
       <Suspense fallback={<CapsuleFallback />}>
@@ -45,12 +48,15 @@ export const PlayerModel = ({
           vaulting={vaulting}
           alive={alive}
           playerId={playerId}
+          characterId={characterId}
         />
       </Suspense>
-      <Billboard position={[0, PLAYER.height / 2 + 0.35, 0]}>
-        {showsName && <EnemyNameLabel name={name} playerId={playerId} />}
-        {health < PLAYER.maxHealth && <NameplateHealthBar health={health} />}
-      </Billboard>
+      {alive && (
+        <Billboard position={[0, PLAYER.height / 2 + 0.35, 0]}>
+          {showsName && <EnemyNameLabel name={isBot ? `BOT ${name}` : name} playerId={playerId} />}
+          {health < PLAYER.maxHealth && <NameplateHealthBar health={health} />}
+        </Billboard>
+      )}
     </group>
   );
 };

@@ -26,7 +26,9 @@ export const PLAYER = {
   jumpSpeed: 9.0,
   gravity: 24.0,
   maxHealth: 100,
-  respawnMs: 3000,
+  // Corpse stays visible for the full duration before respawn — gives the
+  // death animation time to play and lets the killer/victim see what happened.
+  respawnMs: 5000,
   // Health regen kicks in after this long without taking damage.
   regenDelayMs: 4000,
   // Once regen starts, restore this many HP per second until full.
@@ -47,13 +49,112 @@ export const NET = {
   inputBufferMax: 60,
 } as const;
 
+export type BotDifficulty = 'easy' | 'normal' | 'hard';
+
 export const MATCH = {
   defaultKillTarget: 10,
   minKillTarget: 1,
   maxKillTarget: 99,
   // How long the victory overlay stays before the round resets.
   victoryHoldMs: 5000,
+  defaultBotCount: 3,
+  minBotCount: 0,
+  // Cap so bots+humans never exceed MAX_PLAYERS=8. Server clamps further if
+  // humans have already filled the room.
+  maxBotCount: 7,
+  // Default to easy — the first user reaction was "too good", and easy is a
+  // friendlier on-ramp. Selectable from the lobby.
+  defaultBotDifficulty: 'easy' as BotDifficulty,
 } as const;
+
+// Difficulty-independent bot tuning. These don't affect lethality — they're
+// pacing/perf knobs (controller cadence, navigation thresholds, names).
+export const BOT = {
+  names: ['Wraith', 'Echo', 'Vex', 'Halcyon', 'Nyx', 'Onyx', 'Reaver', 'Specter'],
+  // How often the controller re-evaluates its target pick.
+  targetReacquireMs: 250,
+  // How often A* recomputes a path to the current goal.
+  pathReplanMs: 400,
+  // While engaged, refresh line-of-sight at this rate. Cheaper than every tick.
+  losCheckMs: 100,
+  // Switch to next waypoint when within this distance.
+  waypointArriveDist: 1.2,
+  // Sprint when next waypoint is at least this far.
+  sprintWhenFurtherThan: 12,
+  // Reload when ammo drops below this and we're not actively engaged.
+  reloadAmmoThreshold: 6,
+  // Velocity magnitude under which the bot is considered stuck.
+  stuckSpeed: 0.8,
+  // Time below stuckSpeed before triggering jump + replan.
+  stuckMs: 600,
+} as const;
+
+// Per-difficulty knobs. These ARE the lethality dial.
+//
+//   - aimYawRateRad / aimPitchRateRad: max rad/sec the bot can swing its view.
+//     Lower = "snaps" more slowly onto a target → it has to track you, giving
+//     you time to break line-of-sight or hit it first.
+//   - aimJitterRad: per-tick Gaussian noise added to aim. Bigger = more misses.
+//   - engageReachMs: pause between first acquiring line-of-sight and the first
+//     shot. Long delay = you can hear-and-react before they fire.
+//   - fireRangeMax: maximum engagement distance. Lower = they don't pick you
+//     off across the map; you can disengage by retreating.
+//   - fireAimDotMin: cosine of the cone width inside which a bot will pull the
+//     trigger. Lower (e.g. 0.985) = it might fire while still slightly
+//     off-target, which combined with jitter mostly produces misses.
+//   - fireDropoutChance: probability the bot SKIPS firing on a given on-target
+//     tick. Even when perfectly aimed, an "easy" bot misses opportunities.
+export interface BotProfile {
+  readonly aimYawRateRad: number;
+  readonly aimPitchRateRad: number;
+  readonly aimJitterRad: number;
+  readonly engageReachMs: number;
+  readonly fireRangeMax: number;
+  readonly fireRangeMin: number;
+  readonly fireAimDotMin: number;
+  readonly fireDropoutChance: number;
+}
+
+export const BOT_PROFILES: Record<BotDifficulty, BotProfile> = {
+  easy: {
+    // Slow head-swing — gives the player time to break LOS or land a shot first.
+    aimYawRateRad: 1.0,
+    aimPitchRateRad: 0.8,
+    // ~5° wobble — many shots miss even when the bot "thinks" it's on target.
+    aimJitterRad: 0.09,
+    // Almost two full seconds of "spotted you" before the trigger pulls.
+    engageReachMs: 1800,
+    // Short engagement range — if you back off, bots disengage instead of sniping.
+    fireRangeMax: 18,
+    fireRangeMin: 5,
+    fireAimDotMin: 0.98,
+    // Bots fire on only ~20% of on-target ticks — very few opportunities land.
+    fireDropoutChance: 0.8,
+  },
+  normal: {
+    aimYawRateRad: 3.0,
+    aimPitchRateRad: 2.2,
+    aimJitterRad: 0.035,
+    engageReachMs: 700,
+    fireRangeMax: 40,
+    fireRangeMin: 4,
+    fireAimDotMin: 0.992,
+    fireDropoutChance: 0.25,
+  },
+  hard: {
+    aimYawRateRad: 5.0,
+    aimPitchRateRad: 3.5,
+    aimJitterRad: 0.015,
+    engageReachMs: 350,
+    fireRangeMax: 60,
+    fireRangeMin: 4,
+    fireAimDotMin: 0.996,
+    fireDropoutChance: 0,
+  },
+};
+
+export const isBotDifficulty = (s: string): s is BotDifficulty =>
+  s === 'easy' || s === 'normal' || s === 'hard';
 
 export interface Obstacle {
   // World-space center of the box.
@@ -210,3 +311,46 @@ export const HOUSE_WALLS: readonly Obstacle[] = [
 // Single source of truth for arena geometry. Both the client (rendering) and
 // the server (collision) read from this list.
 export const OBSTACLES: readonly Obstacle[] = [...HOUSE_WALLS, ...SCATTERED_OBSTACLES];
+
+// Windows the player can vault through. Each entry describes the wall the
+// window is in: `axis` is the axis the wall RUNS along, `wallCoord` is its
+// position on the perpendicular axis, `openingCenter` is the window's center
+// on the wall's run axis, and `openingHalfWidth` is half the opening width.
+export interface WindowDef {
+  readonly axis: 'x' | 'z';
+  readonly wallCoord: number;
+  readonly openingCenter: number;
+  readonly openingHalfWidth: number;
+}
+
+export const WINDOWS: readonly WindowDef[] = [
+  // North wall: runs along x at z=+HOUSE_W, window centered at x=NORTH_WINDOW_X
+  { axis: 'x', wallCoord: HOUSE_W, openingCenter: NORTH_WINDOW_X, openingHalfWidth: WIN_HW },
+  // East wall: runs along z at x=+HOUSE_W, window centered at z=EAST_WINDOW_Z
+  { axis: 'z', wallCoord: HOUSE_W, openingCenter: EAST_WINDOW_Z, openingHalfWidth: WIN_HW },
+  // West wall: runs along z at x=-HOUSE_W, window centered at z=WEST_WINDOW_Z
+  { axis: 'z', wallCoord: -HOUSE_W, openingCenter: WEST_WINDOW_Z, openingHalfWidth: WIN_HW },
+];
+
+export const VAULT = {
+  // Max distance from the wall plane to trigger a vault. Tight so the player
+  // has to be right at the window — not 1.4m away.
+  triggerRange: 0.9,
+  // Lateral slack beyond the opening half-width — lets the player be slightly
+  // off-center and still vault.
+  lateralSlack: 0.3,
+  // Min |dot(forward, wallNormal)| required — keeps the player from triggering
+  // when glancing past the window.
+  facingMin: 0.5,
+  // How far past the wall the vault deposits the player.
+  exitOffset: 1.2,
+  // Vault duration. The client skips the first ~1.0s of the Vault clip
+  // (approach-run) and plays the remaining 3.2s at 2.1x speed → ~1.5s real
+  // time. Match that here so the position tween ends exactly when the clip
+  // does.
+  durationMs: 1500,
+  // Apex height added to the vault arc. Brings the capsule center up to
+  // approx the window opening center (y≈1.5) at midpoint so the visual
+  // travels THROUGH the opening rather than the solid wall above/below.
+  arcHeight: 0.7,
+} as const;
