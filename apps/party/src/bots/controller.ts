@@ -246,6 +246,10 @@ export const tickBot = (
     reload: wantsReload,
     yaw,
     pitch,
+    // Bots don't have a camera; server falls back to eye + yaw/pitch when
+    // these are null. (No third-person parallax problem to solve.)
+    aimOrigin: null,
+    aim: null,
   };
   applyInput(bot, frame, now);
   return fire;

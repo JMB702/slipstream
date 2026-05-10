@@ -19,6 +19,7 @@ import {
   type GameEvent,
   type GameSnapshot,
   type ServerMessage,
+  type Vec3,
 } from '@slipstream/shared';
 import {
   applyInput,
@@ -39,7 +40,13 @@ export default class SlipstreamServer implements Party.Server {
   };
 
   private players = new Map<string, ServerPlayer>();
-  private pendingFire = new Set<string>();
+  // Pending fires queued during input dispatch, drained once per tick. We
+  // hold the camera-resolved aim alongside the player id so tryFire can
+  // cast from the camera origin instead of the player's eye, fixing the
+  // third-person parallax that lets ledges block what the reticle clears.
+  // null payload → fall back to eye + yaw/pitch (older clients, bots, or
+  // any frame whose camera ray we couldn't compute).
+  private pendingFire = new Map<string, { aimOrigin: Vec3; aim: Vec3 } | null>();
   private events: GameEvent[] = [];
   private tick = 0;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -187,7 +194,13 @@ export default class SlipstreamServer implements Party.Server {
             effectiveFrame = { ...effectiveFrame, fire: false };
           }
           applyInput(player, effectiveFrame, now);
-          if (effectiveFrame.fire) this.pendingFire.add(player.id);
+          if (effectiveFrame.fire) {
+            const aim =
+              effectiveFrame.aimOrigin && effectiveFrame.aim
+                ? { aimOrigin: effectiveFrame.aimOrigin, aim: effectiveFrame.aim }
+                : null;
+            this.pendingFire.set(player.id, aim);
+          }
         }
         return;
       }
@@ -289,7 +302,9 @@ export default class SlipstreamServer implements Party.Server {
       for (const p of all) {
         if (!p.isBot) continue;
         const fired = tickBot(p, all, now, profile);
-        if (fired) this.pendingFire.add(p.id);
+        // Bots have no camera; null payload routes server through the
+        // eye-from-yaw/pitch fallback in tryFire.
+        if (fired) this.pendingFire.set(p.id, null);
       }
     }
 
@@ -304,10 +319,10 @@ export default class SlipstreamServer implements Party.Server {
     }
 
     if (this.winnerId === null && this.pendingFire.size > 0) {
-      for (const id of this.pendingFire) {
+      for (const [id, aim] of this.pendingFire) {
         const shooter = this.players.get(id);
         if (!shooter) continue;
-        const fired = tryFire(shooter, all, now);
+        const fired = tryFire(shooter, all, now, aim);
         if (fired.length > 0) this.events.push(...fired);
       }
       this.pendingFire.clear();

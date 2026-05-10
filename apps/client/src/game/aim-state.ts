@@ -45,9 +45,66 @@ export interface AimTarget {
   alive: boolean;
 }
 
-// Returns the id of the player currently under the local player's reticle, or
-// null. Mirrors the server's tryFire raycast: nearest live player along the
-// ray, but only if no obstacle is closer (so you can't "see through" walls).
+interface CameraRayHit {
+  /** ID of the player under the reticle, or null if it landed on a wall. */
+  playerId: string | null;
+  /** World-space point where the ray terminates (player capsule, wall, or max range). */
+  point: Vec3;
+}
+
+// Cast from the camera (third-person eye-of-the-player view ray) and resolve
+// the nearest player or wall hit. Used for two things:
+//
+//   1) Enemy nameplate reveal — `playerId` says who the reticle is on.
+//   2) Wire-format `aim` for InputFrame — `point` is what the server fires
+//      AT (origin = camera position). This is the fix for the third-person
+//      camera-vs-eye parallax: the camera sees over a ledge that the eye
+//      is behind, so reticle-says-hit but eye-says-blocked. Camera-anchored
+//      cast resolves that correctly.
+//
+// Pass live (rendered) target positions; the server still does its own
+// authoritative lag-compensated test from the same camera origin/direction
+// when a fire input arrives.
+export const castCameraRay = (
+  camOrigin: Vec3,
+  camForward: Vec3,
+  myId: string,
+  targets: Iterable<AimTarget>,
+): CameraRayHit => {
+  const wallT = raycastObstacles(camOrigin, camForward, WEAPON.range);
+  let bestId: string | null = null;
+  let bestT = wallT ?? WEAPON.range;
+  for (const p of targets) {
+    if (p.id === myId || !p.alive) continue;
+    const t = rayCapsuleVertical(
+      camOrigin,
+      camForward,
+      p.position[0],
+      p.position[2],
+      p.position[1] - HALF_SEGMENT,
+      p.position[1] + HALF_SEGMENT,
+      HIT_RADIUS,
+      WEAPON.range,
+    );
+    if (t !== null && t < bestT) {
+      bestT = t;
+      bestId = p.id;
+    }
+  }
+  return {
+    playerId: bestId,
+    point: [
+      camOrigin[0] + camForward[0] * bestT,
+      camOrigin[1] + camForward[1] * bestT,
+      camOrigin[2] + camForward[2] * bestT,
+    ],
+  };
+};
+
+// Backward-compat shim used by code paths that only need the player id under
+// the reticle (e.g. nameplate reveal). Eye-anchored — fine for that purpose
+// because mismatch with camera-anchored is small at distance and the visual
+// "is the reticle on them" answer is what the player perceives anyway.
 export const findAimTarget = (
   myPos: Vec3,
   yaw: number,

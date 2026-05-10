@@ -170,6 +170,8 @@ export const integrateIdle = (player: ServerPlayer, now: number): void => {
     reload: false,
     yaw: player.yaw,
     pitch: player.pitch,
+    aimOrigin: null,
+    aim: null,
   };
   const next = applyMovement(player, idleFrame);
   player.position = next.position;
@@ -275,19 +277,42 @@ export const tryFire = (
   shooter: ServerPlayer,
   others: ServerPlayer[],
   now: number,
+  aim: { aimOrigin: Vec3; aim: Vec3 } | null,
 ): GameEvent[] => {
   if (!shooter.alive || shooter.reloading || shooter.vaultEndAt !== null || shooter.ammo <= 0) return [];
 
   shooter.ammo -= 1;
 
-  // Eye sits a bit above body center (so muzzle flashes don't come out of the chest).
+  // Eye sits a bit above body center (so muzzle flashes don't come out of the
+  // chest). Always used as the visual tracer ORIGIN — even when authoritative
+  // hit detection casts from the camera, the visible bullet travels from gun
+  // to impact so the player sees it leave the rifle.
   const eyeOrigin: Vec3 = [
     shooter.position[0],
     shooter.position[1] + PLAYER.height * 0.3,
     shooter.position[2],
   ];
 
-  const dir = directionFromYawPitch(shooter.yaw, shooter.pitch);
+  // Authoritative cast origin and direction. With a client-supplied aim point,
+  // fire from the CAMERA toward the resolved aim — this is the third-person
+  // camera-vs-eye parallax fix. The camera sits behind+above the player, so
+  // a low ledge that occludes the eye-forward ray doesn't occlude the camera
+  // ray; reticle clear == server-side clear.
+  let castOrigin: Vec3;
+  let dir: Vec3;
+  if (aim) {
+    castOrigin = aim.aimOrigin;
+    const dx = aim.aim[0] - aim.aimOrigin[0];
+    const dy = aim.aim[1] - aim.aimOrigin[1];
+    const dz = aim.aim[2] - aim.aimOrigin[2];
+    const len = Math.hypot(dx, dy, dz) || 1;
+    dir = [dx / len, dy / len, dz / len];
+  } else {
+    // No camera info (bot, dropped frame, older client). Old behavior: fire
+    // from eye along yaw/pitch. Still gets lag-comp rewind below.
+    castOrigin = eyeOrigin;
+    dir = directionFromYawPitch(shooter.yaw, shooter.pitch);
+  }
 
   // Lag-compensation rewind: aim at the world-time the shooter saw on their
   // screen, which is the latest snapshot they received minus the
@@ -295,18 +320,32 @@ export const tryFire = (
   // so use just NET.interpolationDelayMs — that alone covers the dominant
   // visual-lag source for most networks. Future polish can add RTT/2.
   const rewindAt = now - NET.interpolationDelayMs;
-  const playerHit = raycastPlayers(eyeOrigin, dir, WEAPON.range, others, shooter.id, rewindAt);
-  const wallT = raycastObstacles(eyeOrigin, dir, WEAPON.range);
+  const playerHit = raycastPlayers(castOrigin, dir, WEAPON.range, others, shooter.id, rewindAt);
+  const wallT = raycastObstacles(castOrigin, dir, WEAPON.range);
 
   // Shot is blocked if a wall is closer than the nearest player.
   const blocked = wallT !== null && (playerHit === null || wallT < playerHit.t);
   const effectiveHit = blocked ? null : playerHit;
-  const stopT =
+  const castStopT =
     blocked && wallT !== null
       ? wallT
       : effectiveHit !== null
         ? effectiveHit.t
         : WEAPON.range;
+
+  // Visible tracer: anchor at the eye/gun and aim at the world-space impact
+  // point. When camera-anchored cast resolves a hit at e.g. (5, 1.4, -10),
+  // we want the tracer to appear to leave the rifle and end at the same
+  // impact point — not at where the eye-forward ray would have landed.
+  const impactX = castOrigin[0] + dir[0] * castStopT;
+  const impactY = castOrigin[1] + dir[1] * castStopT;
+  const impactZ = castOrigin[2] + dir[2] * castStopT;
+  const eyeDx = impactX - eyeOrigin[0];
+  const eyeDy = impactY - eyeOrigin[1];
+  const eyeDz = impactZ - eyeOrigin[2];
+  const eyeLen = Math.hypot(eyeDx, eyeDy, eyeDz) || 1;
+  const eyeStopT = Math.min(eyeLen, WEAPON.range);
+  const eyeDir: Vec3 = [eyeDx / eyeLen, eyeDy / eyeLen, eyeDz / eyeLen];
 
   const events: GameEvent[] = [
     {
@@ -315,7 +354,11 @@ export const tryFire = (
       origin: eyeOrigin,
       // Direction is unit; we encode the effective tracer length by scaling so
       // the client renders a beam to the impact point, not 80m past the wall.
-      direction: [dir[0] * (stopT / WEAPON.range), dir[1] * (stopT / WEAPON.range), dir[2] * (stopT / WEAPON.range)],
+      direction: [
+        eyeDir[0] * (eyeStopT / WEAPON.range),
+        eyeDir[1] * (eyeStopT / WEAPON.range),
+        eyeDir[2] * (eyeStopT / WEAPON.range),
+      ],
       hit: effectiveHit?.hitId ?? null,
       at: now,
     },

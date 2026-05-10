@@ -1,6 +1,6 @@
 import { useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useRef } from 'react';
-import { Group } from 'three';
+import { useEffect, useMemo, useRef } from 'react';
+import { Group, Vector3 } from 'three';
 import {
   PLAYER,
   TICK_MS,
@@ -8,11 +8,12 @@ import {
   type ClientMessage,
   type InputFrame,
   type MovableState,
+  type Vec3,
 } from '@slipstream/shared';
 import { useGame } from '../store.js';
 import { createInput } from './input.js';
 import { setActiveInput, setPredictedState, consumeFire } from './local-state.js';
-import { findAimTarget, stampAimedAt } from './aim-state.js';
+import { castCameraRay, findAimTarget, stampAimedAt } from './aim-state.js';
 import { hapticFire } from './haptics.js';
 import { playDryFire } from './sfx.js';
 import { PlayerModel } from './PlayerModel.js';
@@ -24,12 +25,15 @@ interface Props {
 
 export const LocalPlayer = ({ send, myName }: Props) => {
   const ref = useRef<Group>(null);
-  const { gl } = useThree();
+  const { gl, camera } = useThree();
   const seqRef = useRef(1);
   const accumulator = useRef(0);
   const lastSent = useRef(performance.now());
   const inputBuffer = useRef<InputFrame[]>([]);
   const liveInputRef = useRef<ReturnType<typeof createInput> | null>(null);
+  // Reused scratch vector for camera.getWorldDirection() — avoids per-frame
+  // allocation in the input-frame builder.
+  const camFwdScratch = useMemo(() => new Vector3(), []);
 
   useEffect(() => {
     const input = createInput(gl.domElement);
@@ -66,6 +70,28 @@ export const LocalPlayer = ({ send, myName }: Props) => {
           playDryFire();
         }
       }
+      // Camera-resolved aim. Cast from the camera (which sees over ledges,
+      // around shoulders, etc.) and find the first wall or player capsule.
+      // Server uses this as authoritative origin/direction so third-person
+      // parallax doesn't make eye-blocked shots fail when the reticle clearly
+      // shows a hit. Live snapshot positions for visual matching; server does
+      // its own lag-comp test from the same origin/direction.
+      let aimOrigin: Vec3 | null = null;
+      let aim: Vec3 | null = null;
+      const myIdNow = useGame.getState().myId;
+      const lastSnapNow =
+        useGame.getState().snapshots[useGame.getState().snapshots.length - 1];
+      if (myIdNow && lastSnapNow) {
+        camera.getWorldDirection(camFwdScratch);
+        aimOrigin = [camera.position.x, camera.position.y, camera.position.z];
+        const hit = castCameraRay(
+          aimOrigin,
+          [camFwdScratch.x, camFwdScratch.y, camFwdScratch.z],
+          myIdNow,
+          lastSnapNow.players.values(),
+        );
+        aim = hit.point;
+      }
       const frame: InputFrame = {
         seq: seqRef.current++,
         dtMs: sendDt,
@@ -79,6 +105,8 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         reload: live.reload,
         yaw: live.yaw,
         pitch: live.pitch,
+        aimOrigin,
+        aim,
       };
       inputBuffer.current.push(frame);
       if (inputBuffer.current.length > 120) inputBuffer.current.shift();
@@ -165,6 +193,9 @@ export const LocalPlayer = ({ send, myName }: Props) => {
         reload: false,
         yaw: live.yaw,
         pitch: live.pitch,
+        // Local-only prediction frame; never serialized over the wire.
+        aimOrigin: null,
+        aim: null,
       });
     }
 
