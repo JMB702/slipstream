@@ -1,4 +1,10 @@
-import { PLAYER, WEAPON, raycastObstacles, type Vec3 } from '@slipstream/shared';
+import {
+  PLAYER,
+  WEAPON,
+  rayCapsuleVertical,
+  raycastObstacles,
+  type Vec3,
+} from '@slipstream/shared';
 
 // Last time (performance.now() ms) the local player's aim was on each remote
 // player. Updated once per frame from LocalPlayer; read every frame from
@@ -18,9 +24,12 @@ export const clearAimState = (): void => {
   lastAimedAt.clear();
 };
 
-// Eye height for aim-origin: matches server (apps/party/src/simulation.ts).
+// Eye height + hit-volume mirror server's player-raycast in
+// apps/party/src/simulation.ts. Keep them in lockstep so reveal-on-aim and
+// actual-hit feel like the same operation to the player.
 const EYE_OFFSET_Y = PLAYER.height * 0.3;
-const HIT_RADIUS = PLAYER.height * 0.4;
+const HIT_RADIUS = PLAYER.radius + 0.1;
+const HALF_SEGMENT = PLAYER.height / 2 - PLAYER.radius;
 
 const directionFromYawPitch = (yaw: number, pitch: number): Vec3 => {
   const cy = Math.cos(yaw);
@@ -28,26 +37,6 @@ const directionFromYawPitch = (yaw: number, pitch: number): Vec3 => {
   const cp = Math.cos(pitch);
   const sp = Math.sin(pitch);
   return [-sy * cp, sp, -cy * cp];
-};
-
-const raySphere = (
-  origin: Vec3,
-  dir: Vec3,
-  center: Vec3,
-  radius: number,
-  maxDist: number,
-): number | null => {
-  const ox = origin[0] - center[0];
-  const oy = origin[1] - center[1];
-  const oz = origin[2] - center[2];
-  const b = ox * dir[0] + oy * dir[1] + oz * dir[2];
-  const c = ox * ox + oy * oy + oz * oz - radius * radius;
-  const disc = b * b - c;
-  if (disc < 0) return null;
-  const sq = Math.sqrt(disc);
-  const t = -b - sq;
-  if (t < 0 || t > maxDist) return null;
-  return t;
 };
 
 export interface AimTarget {
@@ -73,7 +62,16 @@ export const findAimTarget = (
   let bestT = wallT ?? WEAPON.range;
   for (const p of targets) {
     if (p.id === myId || !p.alive) continue;
-    const t = raySphere(origin, dir, p.position, HIT_RADIUS, WEAPON.range);
+    const t = rayCapsuleVertical(
+      origin,
+      dir,
+      p.position[0],
+      p.position[2],
+      p.position[1] - HALF_SEGMENT,
+      p.position[1] + HALF_SEGMENT,
+      HIT_RADIUS,
+      WEAPON.range,
+    );
     if (t !== null && t < bestT) {
       bestT = t;
       bestId = p.id;

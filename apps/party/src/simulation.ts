@@ -6,6 +6,7 @@ import {
   WEAPON,
   WINDOWS,
   applyMovement,
+  rayCapsuleVertical,
   raycastObstacles,
   type GameEvent,
   type InputFrame,
@@ -305,37 +306,30 @@ const raycastPlayers = (
   excludeId: string,
 ): RayHit | null => {
   let best: RayHit | null = null;
-  // Approximate the capsule with a fat sphere covering most of the body.
-  // Slightly over-generous laterally but reliable until we add proper capsule tests.
-  const hitRadius = PLAYER.height * 0.4;
+  // Hit volume = the visible body. Capsule axis is vertical, segment endpoints
+  // sit `(height/2 - radius)` above and below capsule center, hemispheres of
+  // `radius` cap each end. A small bonus over PLAYER.radius keeps registration
+  // feeling snappy without being implausibly forgiving.
+  const hitRadius = PLAYER.radius + 0.1;
+  const halfSegment = PLAYER.height / 2 - PLAYER.radius;
   for (const p of targets) {
     if (p.id === excludeId || !p.alive) continue;
-    const t = raySphere(origin, dir, p.position, hitRadius, maxDist);
+    const yLow = p.position[1] - halfSegment;
+    const yHigh = p.position[1] + halfSegment;
+    const t = rayCapsuleVertical(
+      origin,
+      dir,
+      p.position[0],
+      p.position[2],
+      yLow,
+      yHigh,
+      hitRadius,
+      maxDist,
+    );
     if (t !== null && (best === null || t < best.t)) {
       best = { hitId: p.id, t };
     }
   }
   return best;
-};
-
-const raySphere = (
-  origin: Vec3,
-  dir: Vec3,
-  center: Vec3,
-  radius: number,
-  maxDist: number,
-): number | null => {
-  // The target's body sphere is centered at its position (capsule center).
-  const ox = origin[0] - center[0];
-  const oy = origin[1] - center[1];
-  const oz = origin[2] - center[2];
-  const b = ox * dir[0] + oy * dir[1] + oz * dir[2];
-  const c = ox * ox + oy * oy + oz * oz - radius * radius;
-  const disc = b * b - c;
-  if (disc < 0) return null;
-  const sq = Math.sqrt(disc);
-  const t = -b - sq;
-  if (t < 0 || t > maxDist) return null;
-  return t;
 };
 

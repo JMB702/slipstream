@@ -1,4 +1,5 @@
-import { MAP, OBSTACLES, PLAYER, type Obstacle } from './constants.js';
+import { PLAYER, type Obstacle } from './constants.js';
+import { getActiveMap } from './maps.js';
 import type { InputFrame } from './messages.js';
 import type { Vec3 } from './state.js';
 
@@ -10,9 +11,9 @@ export interface MovableState {
   grounded: boolean;
 }
 
-const HALF_MAP = MAP.size / 2;
-
 export const applyMovement = (state: MovableState, input: InputFrame): MovableState => {
+  const { obstacles: OBSTACLES, size: mapSize } = getActiveMap();
+  const HALF_MAP = mapSize / 2;
   const yaw = input.yaw;
   const pitch = clamp(input.pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
   const dt = Math.min(input.dtMs, 100) / 1000;
@@ -48,45 +49,88 @@ export const applyMovement = (state: MovableState, input: InputFrame): MovableSt
   let py = state.position[1];
   let pz = state.position[2];
 
-  // X axis
-  const targetX = px + vx * dt;
-  let resolvedX = targetX;
-  for (const o of OBSTACLES) {
-    if (!overlapsYZ(py, pz, o, r, halfH)) continue;
-    const minX = o.pos[0] - o.halfSize[0] - r;
-    const maxX = o.pos[0] + o.halfSize[0] + r;
-    if (resolvedX > minX && resolvedX < maxX) {
-      if (px <= minX) {
-        resolvedX = minX;
-      } else if (px >= maxX) {
-        resolvedX = maxX;
-      } else {
-        resolvedX = px;
+  // Per-axis sweep against AABBs. Returns { coord, blocked } so the caller
+  // can decide whether to retry at a stepped-up Y for stair traversal.
+  const sweepX = (sx: number, sy: number, sz: number, target: number) => {
+    let resolved = target;
+    let blocked = false;
+    for (const o of OBSTACLES) {
+      if (!overlapsYZ(sy, sz, o, r, halfH)) continue;
+      const minX = o.pos[0] - o.halfSize[0] - r;
+      const maxX = o.pos[0] + o.halfSize[0] + r;
+      if (resolved > minX && resolved < maxX) {
+        if (sx <= minX) resolved = minX;
+        else if (sx >= maxX) resolved = maxX;
+        else resolved = sx;
+        blocked = true;
       }
+    }
+    return { coord: resolved, blocked };
+  };
+
+  const sweepZ = (sx: number, sy: number, sz: number, target: number) => {
+    let resolved = target;
+    let blocked = false;
+    for (const o of OBSTACLES) {
+      if (!overlapsXY(sx, sy, o, r, halfH)) continue;
+      const minZ = o.pos[2] - o.halfSize[2] - r;
+      const maxZ = o.pos[2] + o.halfSize[2] + r;
+      if (resolved > minZ && resolved < maxZ) {
+        if (sz <= minZ) resolved = minZ;
+        else if (sz >= maxZ) resolved = maxZ;
+        else resolved = sz;
+        blocked = true;
+      }
+    }
+    return { coord: resolved, blocked };
+  };
+
+  // Stair-step: when grounded, run X/Z sweeps twice — once at current py,
+  // once at py + stepHeight. If the lifted pass made more progress, accept
+  // it and snap py up. Stair treads within stepHeight clear the lifted
+  // player; taller walls block both passes identically. Mid-air movement
+  // skips the retry so jumping/falling doesn't get a free auto-step.
+  const targetX = px + vx * dt;
+  const xLow = sweepX(px, py, pz, targetX);
+  let resolvedX = xLow.coord;
+  let stepUpY = py;
+  if (xLow.blocked) {
+    if (grounded) {
+      const liftedPy = py + PLAYER.stepHeight;
+      const xHigh = sweepX(px, liftedPy, pz, targetX);
+      if (Math.abs(xHigh.coord - px) > Math.abs(xLow.coord - px) + 1e-4) {
+        resolvedX = xHigh.coord;
+        stepUpY = liftedPy;
+        if (xHigh.blocked) vx = 0;
+      } else {
+        vx = 0;
+      }
+    } else {
       vx = 0;
     }
   }
   px = resolvedX;
 
-  // Z axis
   const targetZ = pz + vz * dt;
-  let resolvedZ = targetZ;
-  for (const o of OBSTACLES) {
-    if (!overlapsXY(px, py, o, r, halfH)) continue;
-    const minZ = o.pos[2] - o.halfSize[2] - r;
-    const maxZ = o.pos[2] + o.halfSize[2] + r;
-    if (resolvedZ > minZ && resolvedZ < maxZ) {
-      if (pz <= minZ) {
-        resolvedZ = minZ;
-      } else if (pz >= maxZ) {
-        resolvedZ = maxZ;
+  const zLow = sweepZ(px, stepUpY, pz, targetZ);
+  let resolvedZ = zLow.coord;
+  if (zLow.blocked) {
+    if (grounded) {
+      const liftedPy = stepUpY === py ? py + PLAYER.stepHeight : stepUpY;
+      const zHigh = sweepZ(px, liftedPy, pz, targetZ);
+      if (Math.abs(zHigh.coord - pz) > Math.abs(zLow.coord - pz) + 1e-4) {
+        resolvedZ = zHigh.coord;
+        stepUpY = liftedPy;
+        if (zHigh.blocked) vz = 0;
       } else {
-        resolvedZ = pz;
+        vz = 0;
       }
+    } else {
       vz = 0;
     }
   }
   pz = resolvedZ;
+  if (stepUpY > py) py = stepUpY;
 
   // Y axis: gravity / jump, then floor and obstacle-top/bottom resolution
   const targetY = py + vy * dt;
@@ -195,9 +239,86 @@ export const raycastObstacles = (
   inflate = 0,
 ): number | null => {
   let best: number | null = null;
-  for (const o of OBSTACLES) {
+  for (const o of getActiveMap().obstacles) {
     const t = rayAABB(origin, dir, o, maxDist, inflate);
     if (t !== null && (best === null || t < best)) best = t;
   }
   return best;
+};
+
+// Ray-vs-vertical-capsule. Capsule axis is along +y; the segment between
+// (cx, yLow, cz) and (cx, yHigh, cz) is "fat" by `radius` in every direction
+// (cylinder body + hemispherical caps at the endpoints). Returns the nearest
+// non-negative t along `dir` within `maxDist`, or null. Assumes `dir` is unit.
+//
+// Used for player hit detection: replacing the older single-sphere-at-center
+// test, which couldn't reach the head (height/2 = 0.9m above center, sphere
+// radius 0.72m → top of sphere at ~1.62m, well below a 1.8m model's head).
+// Vertical capsule matches the visible body shape, so down-aimed shots from
+// elevation register the way the player expects.
+export const rayCapsuleVertical = (
+  origin: Vec3,
+  dir: Vec3,
+  cx: number,
+  cz: number,
+  yLow: number,
+  yHigh: number,
+  radius: number,
+  maxDist: number,
+): number | null => {
+  let best: number | null = null;
+
+  // 1) Cylinder body. Solve in the x/z plane; ignore y for the quadratic, then
+  //    verify the hit-point's y lies within the segment range.
+  const ox = origin[0] - cx;
+  const oz = origin[2] - cz;
+  const dx = dir[0];
+  const dz = dir[2];
+  const a = dx * dx + dz * dz;
+  if (a > 1e-9) {
+    const halfB = ox * dx + oz * dz;
+    const c = ox * ox + oz * oz - radius * radius;
+    const disc = halfB * halfB - a * c;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      const t = (-halfB - sq) / a;
+      if (t >= 0 && t <= maxDist) {
+        const yHit = origin[1] + t * dir[1];
+        if (yHit >= yLow && yHit <= yHigh) {
+          best = t;
+        }
+      }
+    }
+  }
+
+  // 2) Hemispherical caps. A miss from the cylinder may still hit one of these
+  //    when the ray angles steeply (up-aim or down-aim from a height delta).
+  const tLow = raySphere(origin, dir, cx, yLow, cz, radius, maxDist);
+  if (tLow !== null && (best === null || tLow < best)) best = tLow;
+  const tHigh = raySphere(origin, dir, cx, yHigh, cz, radius, maxDist);
+  if (tHigh !== null && (best === null || tHigh < best)) best = tHigh;
+
+  return best;
+};
+
+const raySphere = (
+  origin: Vec3,
+  dir: Vec3,
+  cx: number,
+  cy: number,
+  cz: number,
+  radius: number,
+  maxDist: number,
+): number | null => {
+  const ox = origin[0] - cx;
+  const oy = origin[1] - cy;
+  const oz = origin[2] - cz;
+  const b = ox * dir[0] + oy * dir[1] + oz * dir[2];
+  const c = ox * ox + oy * oy + oz * oz - radius * radius;
+  const disc = b * b - c;
+  if (disc < 0) return null;
+  const sq = Math.sqrt(disc);
+  const t = -b - sq;
+  if (t < 0 || t > maxDist) return null;
+  return t;
 };
