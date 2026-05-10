@@ -1,5 +1,6 @@
 import {
   MAP,
+  NET,
   PLAYER,
   TICK_MS,
   VAULT,
@@ -202,7 +203,60 @@ export const maybeRespawn = (player: ServerPlayer, now: number): void => {
     player.vaultTo = null;
     player.vaultEndAt = null;
     player.vaulting = false;
+    // Drop rewind history at respawn so a freshly respawned player can't be
+    // hit by a delayed shot at their pre-death location.
+    player.positionHistory = [];
   }
+};
+
+// Lag-compensation rewind buffer.
+//
+// We sample (serverTime, position) once per server tick into a fixed-size
+// circular buffer. tryFire looks up each victim's position at the shooter's
+// view-time — `now - NET.interpolationDelayMs` — instead of using the latest
+// authoritative position. Without this, a target moving at walk speed (6m/s)
+// is offset ~0.6m from where the shooter sees them on screen and any half-
+// decent shot misses for reasons the shooter can't perceive.
+//
+// Buffer holds ~POSITION_HISTORY_MS of samples. Older entries are evicted.
+const POSITION_HISTORY_MS = 500;
+
+export const pushPositionHistory = (player: ServerPlayer, now: number): void => {
+  if (!player.alive) return;
+  player.positionHistory.push({ t: now, pos: player.position });
+  // Evict samples older than POSITION_HISTORY_MS so the buffer can't grow
+  // unbounded for a long-lived match.
+  const cutoff = now - POSITION_HISTORY_MS;
+  while (player.positionHistory.length > 0 && player.positionHistory[0]!.t < cutoff) {
+    player.positionHistory.shift();
+  }
+};
+
+// Returns the player's position at `t` server-time, linearly interpolated
+// between the two history samples that bracket it. Falls back to current
+// position if `t` is newer than the freshest sample (or the buffer is empty);
+// clamps to the oldest sample if `t` is older than anything we have.
+const positionAt = (player: ServerPlayer, t: number): Vec3 => {
+  const h = player.positionHistory;
+  if (h.length === 0) return player.position;
+  if (t >= h[h.length - 1]!.t) return player.position;
+  if (t <= h[0]!.t) return h[0]!.pos;
+  // Linear scan from the back is cheap — buffer is small (~15 entries at 30Hz
+  // and 500ms) and lookups are rare (one per shot).
+  for (let i = h.length - 1; i > 0; i--) {
+    const a = h[i - 1]!;
+    const b = h[i]!;
+    if (t >= a.t && t <= b.t) {
+      const span = b.t - a.t;
+      const frac = span > 0 ? (t - a.t) / span : 0;
+      return [
+        a.pos[0] + (b.pos[0] - a.pos[0]) * frac,
+        a.pos[1] + (b.pos[1] - a.pos[1]) * frac,
+        a.pos[2] + (b.pos[2] - a.pos[2]) * frac,
+      ];
+    }
+  }
+  return player.position;
 };
 
 // Out-of-combat health regen (CoD/Halo style). Runs every tick; only heals
@@ -235,7 +289,13 @@ export const tryFire = (
 
   const dir = directionFromYawPitch(shooter.yaw, shooter.pitch);
 
-  const playerHit = raycastPlayers(eyeOrigin, dir, WEAPON.range, others, shooter.id);
+  // Lag-compensation rewind: aim at the world-time the shooter saw on their
+  // screen, which is the latest snapshot they received minus the
+  // interpolation delay buffer. We don't track per-client RTT precisely yet,
+  // so use just NET.interpolationDelayMs — that alone covers the dominant
+  // visual-lag source for most networks. Future polish can add RTT/2.
+  const rewindAt = now - NET.interpolationDelayMs;
+  const playerHit = raycastPlayers(eyeOrigin, dir, WEAPON.range, others, shooter.id, rewindAt);
   const wallT = raycastObstacles(eyeOrigin, dir, WEAPON.range);
 
   // Shot is blocked if a wall is closer than the nearest player.
@@ -304,6 +364,7 @@ const raycastPlayers = (
   maxDist: number,
   targets: ServerPlayer[],
   excludeId: string,
+  rewindAt: number,
 ): RayHit | null => {
   let best: RayHit | null = null;
   // Hit volume = the visible body. Capsule axis is vertical, segment endpoints
@@ -314,13 +375,18 @@ const raycastPlayers = (
   const halfSegment = PLAYER.height / 2 - PLAYER.radius;
   for (const p of targets) {
     if (p.id === excludeId || !p.alive) continue;
-    const yLow = p.position[1] - halfSegment;
-    const yHigh = p.position[1] + halfSegment;
+    // Rewind to where the shooter SAW this target on screen, not where they
+    // are right now. Without this, a target moving even at walk speed shows
+    // a ~0.6m offset between visual and authoritative position — every
+    // remotely accurate shot misses.
+    const rewound = positionAt(p, rewindAt);
+    const yLow = rewound[1] - halfSegment;
+    const yHigh = rewound[1] + halfSegment;
     const t = rayCapsuleVertical(
       origin,
       dir,
-      p.position[0],
-      p.position[2],
+      rewound[0],
+      rewound[2],
       yLow,
       yHigh,
       hitRadius,

@@ -1,4 +1,4 @@
-import { MAP, OBSTACLES, PLAYER, type CharacterId, type PlayerState, type Vec3 } from '@slipstream/shared';
+import { PLAYER, getActiveMap, type CharacterId, type PlayerState, type Vec3 } from '@slipstream/shared';
 
 export type BotState = 'patrol' | 'hunt' | 'engage' | 'reposition' | 'dead';
 
@@ -20,6 +20,13 @@ export interface ServerPlayer extends PlayerState {
   vaultFrom: Vec3 | null;
   vaultTo: Vec3 | null;
   vaultEndAt: number | null;
+  // Lag-compensation rewind buffer. Each tick pushes (serverTime, position).
+  // tryFire looks up each potential victim's position at
+  // `now - NET.interpolationDelayMs` so we hit-test against where the
+  // shooter SAW them on screen, not where they happen to be at receipt.
+  // Cleared on respawn so a freshly respawned player can't be hit at their
+  // last-life location.
+  positionHistory: Array<{ t: number; pos: Vec3 }>;
   // Per-bot controller state. None of these cross the wire — stripped in
   // server.ts before broadcast. All optional so humans pay no extra cost.
   botState?: BotState;
@@ -73,24 +80,26 @@ export const initialPlayer = (
   vaultFrom: null,
   vaultTo: null,
   vaultEndAt: null,
+  positionHistory: [],
 });
 
 export const randomSpawn = (): Vec3 => {
   // Reject candidates that overlap an obstacle's inflated AABB so we don't
   // spawn the player stuck inside a box.
-  const half = MAP.size / 2 - 4;
+  const map = getActiveMap();
+  const half = map.spawnArea;
   const r = PLAYER.radius;
   const halfH = PLAYER.height / 2;
   for (let attempt = 0; attempt < 32; attempt++) {
     const x = (Math.random() * 2 - 1) * half;
     const z = (Math.random() * 2 - 1) * half;
-    const y = MAP.spawnHeight;
+    const y = map.spawnHeight;
     if (!insideAnyObstacle(x, y, z, r, halfH)) {
       return [x, y, z];
     }
   }
   // Fallback: world origin should always be open enough at floor height.
-  return [0, MAP.spawnHeight, 0];
+  return [0, map.spawnHeight, 0];
 };
 
 const insideAnyObstacle = (
@@ -100,7 +109,7 @@ const insideAnyObstacle = (
   r: number,
   halfH: number,
 ): boolean => {
-  for (const o of OBSTACLES) {
+  for (const o of getActiveMap().obstacles) {
     if (
       x > o.pos[0] - o.halfSize[0] - r &&
       x < o.pos[0] + o.halfSize[0] + r &&

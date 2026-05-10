@@ -2,6 +2,7 @@ import type * as Party from 'partykit/server';
 import {
   BOT,
   BOT_PROFILES,
+  DEFAULT_MAP_ID,
   MATCH,
   MAX_PLAYERS,
   PLAYER,
@@ -11,6 +12,8 @@ import {
   decode,
   encode,
   isBotDifficulty,
+  isMapId,
+  setActiveMap,
   type BotDifficulty,
   type ClientMessage,
   type GameEvent,
@@ -22,6 +25,7 @@ import {
   finishReload,
   integrateIdle,
   maybeRespawn,
+  pushPositionHistory,
   regenHealth,
   tickVault,
   tryFire,
@@ -59,11 +63,24 @@ export default class SlipstreamServer implements Party.Server {
 
   onStart(): void {
     this.startedAt = Date.now();
+    // The PartyKit room id IS the map id — Lobby's dropdown maps directly
+    // onto room name. Unknown ids fall back to the default map so dev/test
+    // rooms with arbitrary names still boot something playable.
+    setActiveMap(isMapId(this.room.id) ? this.room.id : DEFAULT_MAP_ID);
     this.startTimers();
   }
 
   onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): void {
     const url = new URL(ctx.request.url);
+
+    // Reject mismatched map ids up front so the client can't silently end
+    // up in a room whose physics differ from what the lobby promised.
+    const queryMap = url.searchParams.get('mapId');
+    const expected = isMapId(this.room.id) ? this.room.id : DEFAULT_MAP_ID;
+    if (queryMap && queryMap !== expected) {
+      conn.close(4002, `wrong map: room is ${expected}`);
+      return;
+    }
 
     // Optional access-code gate. If ACCESS_CODE is set in the room's env
     // (apps/party/.env in dev, `partykit env add` in prod), every
@@ -280,6 +297,10 @@ export default class SlipstreamServer implements Party.Server {
       // Run physics for any time gap that hasn't already been integrated by an
       // arriving input — keeps idle/AFK/just-spawned players from floating.
       integrateIdle(p, now);
+      // Stamp position into the rewind buffer AFTER all this tick's physics
+      // is final, so the buffer reflects the same positions broadcast in the
+      // upcoming snapshot. tryFire below uses these to rewind hit detection.
+      pushPositionHistory(p, now);
     }
 
     if (this.winnerId === null && this.pendingFire.size > 0) {
