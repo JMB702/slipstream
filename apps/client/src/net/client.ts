@@ -4,6 +4,7 @@ import {
   encode,
   type BotDifficulty,
   type ClientMessage,
+  type MapId,
   type ServerMessage,
 } from '@slipstream/shared';
 import { useGame } from '../store.js';
@@ -21,7 +22,7 @@ export interface NetClient {
 }
 
 export const connect = (
-  room: string,
+  mapId: MapId,
   name: string,
   killTarget?: number,
   accessCode?: string,
@@ -32,7 +33,7 @@ export const connect = (
   store.setConn('connecting');
   store.setCloseReason(null);
 
-  const query: Record<string, string> = { name };
+  const query: Record<string, string> = { name, mapId };
   if (killTarget != null && Number.isFinite(killTarget)) {
     query.killTarget = String(Math.floor(killTarget));
   }
@@ -48,7 +49,7 @@ export const connect = (
 
   const socket = new PartySocket({
     host: HOST,
-    room,
+    room: mapId,
     party: 'main',
     query,
   });
@@ -65,6 +66,8 @@ export const connect = (
     const reason = (event as CloseEvent).reason;
     if (code === 4003) {
       useGame.getState().setCloseReason(reason || 'invalid access code');
+    } else if (code === 4002) {
+      useGame.getState().setCloseReason(reason || 'wrong map');
     } else if (code === 4001) {
       useGame.getState().setCloseReason(reason || 'room full');
     }

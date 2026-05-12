@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import { MATCH, type GameEvent, type GameSnapshot, type PlayerId, type PlayerState } from '@slipstream/shared';
+import {
+  DEFAULT_MAP_ID,
+  MATCH,
+  type GameEvent,
+  type GameSnapshot,
+  type MapId,
+  type PlayerId,
+  type PlayerState,
+} from '@slipstream/shared';
 
 export type ConnState = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
@@ -19,12 +27,14 @@ interface State {
   chat: GameEvent[];
   killTarget: number;
   winnerId: PlayerId | null;
+  activeMapId: MapId;
   // Reason from the most recent socket close, surfaced in the Lobby.
   // Cleared when the user starts another join attempt.
   lastCloseReason: string | null;
   setConn(s: ConnState): void;
   setCloseReason(r: string | null): void;
   setMyId(id: PlayerId): void;
+  setActiveMapId(id: MapId): void;
   ingestSnapshot(s: GameSnapshot): void;
   ingestEvents(e: GameEvent[]): void;
   reset(): void;
@@ -43,6 +53,7 @@ export const useGame = create<State>((set, get) => ({
   chat: [],
   killTarget: MATCH.defaultKillTarget,
   winnerId: null,
+  activeMapId: DEFAULT_MAP_ID,
   lastCloseReason: null,
 
   setConn(s) {
@@ -55,6 +66,10 @@ export const useGame = create<State>((set, get) => ({
 
   setMyId(id) {
     set({ myId: id });
+  },
+
+  setActiveMapId(id) {
+    set({ activeMapId: id });
   },
 
   ingestSnapshot(s) {

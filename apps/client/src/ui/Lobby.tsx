@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { MATCH, isBotDifficulty, type BotDifficulty } from '@slipstream/shared';
+import {
+  DEFAULT_MAP_ID,
+  MAPS,
+  MATCH,
+  isBotDifficulty,
+  isMapId,
+  type BotDifficulty,
+  type MapId,
+} from '@slipstream/shared';
 import { useGame } from '../store.js';
 import { CLONE_PROMPT } from './clonePrompt.js';
 
 interface Props {
   onJoin(args: {
     name: string;
-    room: string;
+    mapId: MapId;
     killTarget: number;
     accessCode: string;
     botCount: number;
@@ -18,7 +26,7 @@ const ACCESS_CODE_LEN = 4;
 
 export const Lobby = ({ onJoin }: Props) => {
   const [name, setName] = useState(() => loadName());
-  const [room, setRoom] = useState('arena-1');
+  const [mapId, setMapId] = useState<MapId>(() => loadMap());
   const [killTarget, setKillTarget] = useState<string>(String(MATCH.defaultKillTarget));
   const [botCount, setBotCount] = useState<string>(String(MATCH.defaultBotCount));
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>(MATCH.defaultBotDifficulty);
@@ -46,13 +54,21 @@ export const Lobby = ({ onJoin }: Props) => {
         </label>
 
         <label style={label}>
-          Room
-          <input
+          Map
+          <select
             style={input}
-            value={room}
-            maxLength={32}
-            onChange={(e) => setRoom(e.target.value.replace(/[^a-zA-Z0-9-_]/g, ''))}
-          />
+            value={mapId}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (isMapId(v)) setMapId(v);
+            }}
+          >
+            {Object.values(MAPS).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.displayName}
+              </option>
+            ))}
+          </select>
         </label>
 
         <label style={label}>
@@ -137,6 +153,7 @@ export const Lobby = ({ onJoin }: Props) => {
             const finalName = name.trim() || 'Player';
             saveName(finalName);
             saveCode(accessCode);
+            saveMap(mapId);
             const parsed = Math.floor(Number(killTarget));
             const target = Number.isFinite(parsed)
               ? Math.max(MATCH.minKillTarget, Math.min(MATCH.maxKillTarget, parsed))
@@ -149,7 +166,7 @@ export const Lobby = ({ onJoin }: Props) => {
             setLocalError(null);
             onJoin({
               name: finalName,
-              room: room.trim() || 'arena-1',
+              mapId,
               killTarget: target,
               accessCode,
               botCount: finalBots,
@@ -304,6 +321,7 @@ const button: React.CSSProperties = {
 
 const NAME_KEY = 'slipstream:name';
 const CODE_KEY = 'slipstream:accessCode';
+const MAP_KEY = 'slipstream:mapId';
 const loadName = () => {
   try {
     return localStorage.getItem(NAME_KEY) ?? '';
@@ -328,6 +346,21 @@ const loadCode = () => {
 const saveCode = (c: string) => {
   try {
     localStorage.setItem(CODE_KEY, c);
+  } catch {
+    // ignore
+  }
+};
+const loadMap = (): MapId => {
+  try {
+    const raw = localStorage.getItem(MAP_KEY);
+    return isMapId(raw) ? raw : DEFAULT_MAP_ID;
+  } catch {
+    return DEFAULT_MAP_ID;
+  }
+};
+const saveMap = (id: MapId) => {
+  try {
+    localStorage.setItem(MAP_KEY, id);
   } catch {
     // ignore
   }

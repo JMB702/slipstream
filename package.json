@@ -14,7 +14,8 @@
     "lint": "pnpm -r lint",
     "format": "prettier --write .",
     "deploy:party": "pnpm --filter party deploy",
-    "deploy:client": "pnpm --filter client build && echo 'Push to Git or run: vercel --prod'"
+    "deploy:client": "pnpm --filter client build && echo 'Push to Git or run: vercel --prod'",
+    "extract:collision": "node scripts/extract-map-collision.mjs"
   },
   "devDependencies": {
     "prettier": "^3.4.2",
