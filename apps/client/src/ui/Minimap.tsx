@@ -1,18 +1,19 @@
-import { MAP, OBSTACLES } from '@slipstream/shared';
+import { MAPS } from '@slipstream/shared';
 import { useGame } from '../store.js';
 
 const SIZE = 160;
-const SCALE = SIZE / MAP.size;
-
-const worldToMap = (x: number, z: number) => ({
-  x: x * SCALE + SIZE / 2,
-  // Screen-y inverted vs world-z so forward (-z at yaw=0) reads as "up".
-  y: -z * SCALE + SIZE / 2,
-});
 
 export const Minimap = () => {
   const myId = useGame((s) => s.myId);
+  const mapId = useGame((s) => s.activeMapId);
   const lastSnap = useGame((s) => s.snapshots[s.snapshots.length - 1]);
+  const map = MAPS[mapId];
+  const scale = SIZE / map.size;
+  const worldToMap = (x: number, z: number) => ({
+    x: x * scale + SIZE / 2,
+    // Screen-y inverted vs world-z so forward (-z at yaw=0) reads as "up".
+    y: -z * scale + SIZE / 2,
+  });
   if (!myId || !lastSnap) return null;
   const me = lastSnap.players.get(myId);
   if (!me) return null;
@@ -36,10 +37,10 @@ export const Minimap = () => {
       </div>
       <svg width={SIZE} height={SIZE} style={mapStyle}>
       <rect width={SIZE} height={SIZE} fill="rgba(8,10,18,0.75)" />
-      {OBSTACLES.map((o, i) => {
+      {map.obstacles.map((o, i) => {
         const c = worldToMap(o.pos[0], o.pos[2]);
-        const w = o.halfSize[0] * 2 * SCALE;
-        const h = o.halfSize[2] * 2 * SCALE;
+        const w = o.halfSize[0] * 2 * scale;
+        const h = o.halfSize[2] * 2 * scale;
         return (
           <rect
             key={i}

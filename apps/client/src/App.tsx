@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { BotDifficulty } from '@slipstream/shared';
+import { setActiveMap, type BotDifficulty, type MapId } from '@slipstream/shared';
 import { connect, type NetClient } from './net/client.js';
 import { Scene } from './game/Scene.js';
 import { Lobby } from './ui/Lobby.js';
@@ -15,20 +15,22 @@ export const App = () => {
 
   const onJoin = ({
     name,
-    room,
+    mapId,
     killTarget,
     accessCode,
     botCount,
     botDifficulty,
   }: {
     name: string;
-    room: string;
+    mapId: MapId;
     killTarget: number;
     accessCode: string;
     botCount: number;
     botDifficulty: BotDifficulty;
   }) => {
-    const c = connect(room, name, killTarget, accessCode, botCount, botDifficulty);
+    setActiveMap(mapId);
+    useGame.getState().setActiveMapId(mapId);
+    const c = connect(mapId, name, killTarget, accessCode, botCount, botDifficulty);
     setClient(c);
     setName(name);
   };

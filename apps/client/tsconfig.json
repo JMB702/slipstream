@@ -6,5 +6,6 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src/**/*", "../../packages/shared/src/**/*"]
+  "include": ["src/**/*", "../../packages/shared/src/**/*"],
+  "exclude": ["../../packages/shared/src/**/* 2.ts"]
 }

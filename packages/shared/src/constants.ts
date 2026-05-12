@@ -25,6 +25,10 @@ export const PLAYER = {
   // platform distinction. Time to peak ≈ 0.375s, total airtime ≈ 0.75s.
   jumpSpeed: 9.0,
   gravity: 24.0,
+  // Auto-step over obstacles up to this tall (stairs, low ledges, kerbs).
+  // Below the half-meter typical of step risers — anything taller still needs
+  // a jump so the cover-vs-platform distinction holds.
+  stepHeight: 0.55,
   maxHealth: 100,
   // Corpse stays visible for the full duration before respawn — gives the
   // death animation time to play and lets the killer/victim see what happened.

@@ -10,6 +10,7 @@ import {
 import type { ServerPlayer } from '../state.js';
 import { applyInput } from '../simulation.js';
 import { planPath, randomPatrolGoal } from './path.js';
+import { getNavGraph } from './waypoints.js';
 import {
   directionFromYawPitch,
   eyePosition,
@@ -18,6 +19,92 @@ import {
   slewAngle,
   yawPitchToward,
 } from './aim.js';
+
+// Memory of recently chosen patrol goals (node indices). Capped to keep the
+// bias from starving the bot on small maps with few nodes.
+const VISITED_MEMORY = 8;
+// Patrol-goal selection mix.
+//   - "unvisited": ~60% — random pick from nodes the bot hasn't been to lately.
+//     Drives general coverage.
+//   - "upper":     ~25% — random pick from any node above the ground tier
+//     so multi-level maps see bots actively climbing.
+//   - "expedition": ~15% — pick the FARTHEST node from current position so
+//     the bot occasionally commits to a long traversal across the map.
+const UPPER_TIER_Y_MIN = 2.5;
+const MIN_GOAL_DISTANCE = 6;
+
+const pickExplorationGoal = (bot: ServerPlayer): Vec3 | null => {
+  const graph = getNavGraph();
+  if (graph.nodes.length === 0) return null;
+  const visited = bot.botVisitedRecent ?? [];
+  const visitedSet = new Set(visited);
+  const here = bot.position;
+  const minDistSq = MIN_GOAL_DISTANCE * MIN_GOAL_DISTANCE;
+  const farEnough = (n: Vec3) => {
+    const dx = n[0] - here[0];
+    const dz = n[2] - here[2];
+    return dx * dx + dz * dz >= minDistSq;
+  };
+
+  const roll = Math.random();
+  let chosenIdx = -1;
+
+  // ~15% — long expedition: farthest reachable node.
+  if (roll < 0.15) {
+    let bestDist = -1;
+    for (let i = 0; i < graph.nodes.length; i++) {
+      const n = graph.nodes[i]!;
+      const dx = n[0] - here[0];
+      const dz = n[2] - here[2];
+      const d = dx * dx + dz * dz;
+      if (d > bestDist) {
+        bestDist = d;
+        chosenIdx = i;
+      }
+    }
+  } else if (roll < 0.40) {
+    // ~25% — upper-tier bias.
+    const candidates: number[] = [];
+    for (let i = 0; i < graph.nodes.length; i++) {
+      const n = graph.nodes[i]!;
+      if (n[1] < UPPER_TIER_Y_MIN) continue;
+      if (visitedSet.has(i)) continue;
+      if (!farEnough(n)) continue;
+      candidates.push(i);
+    }
+    // Fall back to any upper-tier node if all are visited/too close.
+    if (candidates.length === 0) {
+      for (let i = 0; i < graph.nodes.length; i++) {
+        if (graph.nodes[i]![1] >= UPPER_TIER_Y_MIN) candidates.push(i);
+      }
+    }
+    if (candidates.length > 0) {
+      chosenIdx = candidates[Math.floor(Math.random() * candidates.length)]!;
+    }
+  }
+
+  // ~60% — unvisited general pick. Also the fallback for any branch above
+  // that produced no candidate.
+  if (chosenIdx < 0) {
+    const candidates: number[] = [];
+    for (let i = 0; i < graph.nodes.length; i++) {
+      if (visitedSet.has(i)) continue;
+      if (!farEnough(graph.nodes[i]!)) continue;
+      candidates.push(i);
+    }
+    if (candidates.length === 0) {
+      // All near or all visited — fall through to any non-self node.
+      for (let i = 0; i < graph.nodes.length; i++) candidates.push(i);
+    }
+    chosenIdx = candidates[Math.floor(Math.random() * candidates.length)]!;
+  }
+
+  // Remember the pick so subsequent rolls avoid it (LRU ring).
+  const next = (bot.botVisitedRecent = bot.botVisitedRecent ?? []);
+  next.push(chosenIdx);
+  while (next.length > VISITED_MEMORY) next.shift();
+  return graph.nodes[chosenIdx] ?? null;
+};
 
 // Drive a bot one tick: pick state, plan path if needed, generate an input
 // frame, and feed it through the existing applyInput pipeline so bots and
@@ -103,10 +190,17 @@ export const tickBot = (
       !bot.botPath ||
       bot.botPath.length === 0;
     if (replanDue) {
-      const goal: Vec3 =
-        bot.botState === 'hunt' && bot.botGoal
-          ? bot.botGoal
-          : (bot.botGoal ?? randomPatrolGoal(bot.position));
+      let goal: Vec3 | null = null;
+      if (bot.botState === 'hunt' && bot.botGoal) {
+        goal = bot.botGoal;
+      } else if (bot.botGoal) {
+        goal = bot.botGoal;
+      } else {
+        // Exploration: weighted pick (unvisited / upper-tier / long expedition)
+        // so bots don't just oscillate near spawn. Falls back to the basic
+        // random-patrol if the graph is empty.
+        goal = pickExplorationGoal(bot) ?? randomPatrolGoal(bot.position);
+      }
       bot.botGoal = goal;
       const path = planPath(bot.position, goal);
       bot.botPath = path ?? [goal];
@@ -332,6 +426,7 @@ export const ensureBotDefaults = (bot: ServerPlayer, now: number): void => {
   bot.botStuckSince = undefined;
   bot.botStrafeSign = 1;
   bot.botStrafeFlipAt = now;
+  bot.botVisitedRecent = [];
   // Treat the join time as integration baseline so integrateIdle doesn't
   // immediately deluge gravity into them on tick 1.
   bot.lastIntegratedAt = now;

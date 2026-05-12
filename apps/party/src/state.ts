@@ -44,6 +44,9 @@ export interface ServerPlayer extends PlayerState {
   botSawTargetSince?: number;
   botStrafeSign?: number;
   botStrafeFlipAt?: number;
+  // Recently chosen patrol goal node indices — drives variety in
+  // pickExplorationGoal so bots don't oscillate between the same two nodes.
+  botVisitedRecent?: number[];
 }
 
 export const initialPlayer = (
@@ -84,9 +87,17 @@ export const initialPlayer = (
 });
 
 export const randomSpawn = (): Vec3 => {
-  // Reject candidates that overlap an obstacle's inflated AABB so we don't
-  // spawn the player stuck inside a box.
   const map = getActiveMap();
+  // Prefer hand-authored spawn points when the map provides them — picking
+  // from a known-safe list eliminates the wall-clip edge cases that random
+  // rejection sampling can hit when the playable area is densely occupied.
+  if (map.spawnPoints.length > 0) {
+    const i = Math.floor(Math.random() * map.spawnPoints.length);
+    const [x, y, z] = map.spawnPoints[i]!;
+    return [x, y, z];
+  }
+  // Fallback: rejection-sample in the spawnArea box. Reject candidates that
+  // overlap an obstacle's inflated AABB so we don't spawn stuck inside one.
   const half = map.spawnArea;
   const r = PLAYER.radius;
   const halfH = PLAYER.height / 2;
@@ -98,7 +109,6 @@ export const randomSpawn = (): Vec3 => {
       return [x, y, z];
     }
   }
-  // Fallback: world origin should always be open enough at floor height.
   return [0, map.spawnHeight, 0];
 };
 

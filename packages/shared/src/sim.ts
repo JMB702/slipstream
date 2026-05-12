@@ -238,12 +238,66 @@ export const raycastObstacles = (
   maxDist: number,
   inflate = 0,
 ): number | null => {
+  const map = getActiveMap();
+  // Triangle mesh path: precise, matches the visible geometry exactly. The
+  // voxelized-AABB raycast it replaces would block shots above visible wall
+  // tops when the voxelizer's greedy merge extended an AABB past the mesh.
+  // `inflate` is ignored on the mesh path — it only ever matters for camera
+  // spring-arm collision, which still uses AABB obstacles.
+  if (map.collisionTris.length > 0) {
+    let best: number | null = null;
+    for (const tri of map.collisionTris) {
+      const t = rayTriangle(origin, dir, tri.a, tri.b, tri.c, maxDist);
+      if (t !== null && (best === null || t < best)) best = t;
+    }
+    return best;
+  }
   let best: number | null = null;
-  for (const o of getActiveMap().obstacles) {
+  for (const o of map.obstacles) {
     const t = rayAABB(origin, dir, o, maxDist, inflate);
     if (t !== null && (best === null || t < best)) best = t;
   }
   return best;
+};
+
+// Möller-Trumbore ray-triangle intersection. Returns the distance `t` along
+// `dir` (assumed unit length) from `origin` to the front-face hit, or null
+// if the ray misses, hits beyond `maxDist`, or hits the back face. Treating
+// back-face hits as misses matches the AABB raycast it replaces — a shot
+// fired from inside a wall shouldn't register against that wall's interior.
+export const rayTriangle = (
+  origin: Vec3,
+  dir: Vec3,
+  a: Vec3,
+  b: Vec3,
+  c: Vec3,
+  maxDist: number,
+): number | null => {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const abz = b[2] - a[2];
+  const acx = c[0] - a[0];
+  const acy = c[1] - a[1];
+  const acz = c[2] - a[2];
+  const px = dir[1] * acz - dir[2] * acy;
+  const py = dir[2] * acx - dir[0] * acz;
+  const pz = dir[0] * acy - dir[1] * acx;
+  const det = abx * px + aby * py + abz * pz;
+  if (det < 1e-8) return null;
+  const invDet = 1 / det;
+  const tvx = origin[0] - a[0];
+  const tvy = origin[1] - a[1];
+  const tvz = origin[2] - a[2];
+  const u = (tvx * px + tvy * py + tvz * pz) * invDet;
+  if (u < 0 || u > 1) return null;
+  const qx = tvy * abz - tvz * aby;
+  const qy = tvz * abx - tvx * abz;
+  const qz = tvx * aby - tvy * abx;
+  const v = (dir[0] * qx + dir[1] * qy + dir[2] * qz) * invDet;
+  if (v < 0 || u + v > 1) return null;
+  const t = (acx * qx + acy * qy + acz * qz) * invDet;
+  if (t < 0 || t > maxDist) return null;
+  return t;
 };
 
 // Ray-vs-vertical-capsule. Capsule axis is along +y; the segment between
