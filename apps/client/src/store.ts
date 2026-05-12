@@ -43,6 +43,16 @@ interface State {
 const SNAPSHOT_BUFFER = 30;
 const FEED_LIMIT = 8;
 
+// Dev-only debug hook: expose the store on window so test scripts and
+// in-browser eval can read live snapshot/player state without needing the
+// same module instance Vite served to the app. Stripped in production
+// builds via `import.meta.env.DEV`.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  Promise.resolve().then(() => {
+    (window as unknown as { useGame: unknown }).useGame = useGame;
+  });
+}
+
 export const useGame = create<State>((set, get) => ({
   conn: 'idle',
   myId: null,

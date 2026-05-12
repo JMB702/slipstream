@@ -4,12 +4,12 @@ const PLAYER_R = 0.4;
 const PLAYER_HALF_H = 1.0;
 const SPAWN_Y = 4;
 
-const stuck = [
+const points = [
   ['Spawn_00', 3.346, -11.4],
   ['Spawn_01', 8.862, -8.762],
   ['Spawn_04', -1.419, -11.492],
-  ['Spawn_05', 15.432, 11.098],
-  ['Spawn_06', -12.146, -8.085],
+  ['Spawn_05', 10.561, 7.595],
+  ['Spawn_06', -11.45, -7.047],
   ['Spawn_07', 5.063, -4.031],
   ['Spawn_09', 7.06, -11.504],
   ['Spawn_11', -3.834, -8.268],
@@ -34,9 +34,9 @@ const insideAt = (x, y, z) => {
       z > o.pos[2] - o.halfSize[2] - PLAYER_R &&
       z < o.pos[2] + o.halfSize[2] + PLAYER_R
     )
-      return true;
+      return o;
   }
-  return false;
+  return null;
 };
 
 const topUnder = (x, z, ceilingY) => {
@@ -55,35 +55,26 @@ const topUnder = (x, z, ceilingY) => {
   return top === -Infinity ? null : top;
 };
 
-console.log('name      gxz                 verdict');
-console.log('--------- ------------------- -------------------------------------');
-for (const [name, x, z] of stuck) {
-  const obs = (() => {
-    for (const o of FPS_SHOOTER_OBSTACLES) {
-      if (
-        x > o.pos[0] - o.halfSize[0] - PLAYER_R &&
-        x < o.pos[0] + o.halfSize[0] + PLAYER_R &&
-        SPAWN_Y > o.pos[1] - o.halfSize[1] - PLAYER_HALF_H &&
-        SPAWN_Y < o.pos[1] + o.halfSize[1] + PLAYER_HALF_H &&
-        z > o.pos[2] - o.halfSize[2] - PLAYER_R &&
-        z < o.pos[2] + o.halfSize[2] + PLAYER_R
-      )
-        return o;
-    }
-    return null;
-  })();
+console.log('name      gxz                     verdict');
+console.log('--------- ----------------------- -----------------------------------------------');
+for (const [name, x, z] of points) {
+  const obs = insideAt(x, SPAWN_Y, z);
   if (obs) {
-    console.log(name.padEnd(9), `(${x.toFixed(2).padStart(6)}, ${z.toFixed(2).padStart(7)})`, 'STUCK');
+    console.log(
+      name.padEnd(9),
+      `(${x.toFixed(2).padStart(7)}, ${z.toFixed(2).padStart(7)})`,
+      `STUCK in pos=[${obs.pos.map((v) => v.toFixed(2)).join(',')}] half=[${obs.halfSize.map((v) => v.toFixed(2)).join(',')}]`,
+    );
     continue;
   }
   const t = topUnder(x, z, SPAWN_Y - PLAYER_HALF_H);
   if (t === null) {
-    console.log(name.padEnd(9), `(${x.toFixed(2).padStart(6)}, ${z.toFixed(2).padStart(7)})`, 'NO FLOOR');
+    console.log(name.padEnd(9), `(${x.toFixed(2).padStart(7)}, ${z.toFixed(2).padStart(7)})`, 'NO FLOOR');
     continue;
   }
   console.log(
     name.padEnd(9),
-    `(${x.toFixed(2).padStart(6)}, ${z.toFixed(2).padStart(7)})`,
+    `(${x.toFixed(2).padStart(7)}, ${z.toFixed(2).padStart(7)})`,
     `lands surface_y=${t.toFixed(2)} (drop=${(SPAWN_Y - (t + PLAYER_HALF_H)).toFixed(2)}m)`,
   );
 }

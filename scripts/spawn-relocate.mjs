@@ -3,12 +3,17 @@ import { FPS_SHOOTER_OBSTACLES } from '../packages/shared/src/maps/fps_shooter.c
 const PLAYER_R = 0.4;
 const PLAYER_HALF_H = 1.0;
 const SPAWN_Y = 4;
-const BOUND = 11.5;
+const PLAY_HALF = 9.5;
 
-// Points to consider for re-relocation (anything outside ±11.5 or that we want re-checked).
 const candidates = [
-  ['Spawn_05', 15.432, 11.098],
-  ['Spawn_06', -12.146, -8.085],
+  ['Spawn_00', 3.346, -11.4],
+  ['Spawn_04', -1.419, -11.492],
+  ['Spawn_05', 10.561, 7.595],
+  ['Spawn_06', -11.45, -7.047],
+  ['Spawn_09', 7.06, -11.504],
+  ['Spawn_12', 10.973, -3.922],
+  ['Spawn_16', 0.397, 11.521],
+  ['Spawn_20', 4.472, -11.509],
 ];
 
 const insideAt = (x, y, z) => {
@@ -26,53 +31,40 @@ const insideAt = (x, y, z) => {
   return false;
 };
 
-const topUnder = (x, z, ceilingY) => {
-  let top = -Infinity;
-  for (const o of FPS_SHOOTER_OBSTACLES) {
-    if (
-      x > o.pos[0] - o.halfSize[0] - PLAYER_R &&
-      x < o.pos[0] + o.halfSize[0] + PLAYER_R &&
-      z > o.pos[2] - o.halfSize[2] - PLAYER_R &&
-      z < o.pos[2] + o.halfSize[2] + PLAYER_R
-    ) {
-      const t = o.pos[1] + o.halfSize[1];
-      if (t <= ceilingY && t > top) top = t;
-    }
-  }
-  return top === -Infinity ? null : top;
-};
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-const findClear = (x0, z0) => {
-  const dirToOrigin = Math.atan2(-z0, -x0);
-  for (let r = 0.5; r <= 8.0; r += 0.25) {
-    for (let dTheta = 0; dTheta <= Math.PI; dTheta += Math.PI / 16) {
-      for (const sign of dTheta === 0 ? [0] : [-1, 1]) {
-        const theta = dirToOrigin + sign * dTheta;
-        const x = x0 + r * Math.cos(theta);
-        const z = z0 + r * Math.sin(theta);
-        if (x < -BOUND || x > BOUND || z < -BOUND || z > BOUND) continue;
-        if (insideAt(x, SPAWN_Y, z)) continue;
-        const t = topUnder(x, z, SPAWN_Y - PLAYER_HALF_H);
-        if (t === null) continue;
-        if (t > 2.5) continue;
-        return { x, z, r, surface: t };
-      }
+// Pull (x,z) into the play box. If the clamped point is stuck on an interior
+// obstacle, spiral outward (but staying inside the play box) until clear.
+const relocate = (x0, z0) => {
+  const tx = clamp(x0, -PLAY_HALF, PLAY_HALF);
+  const tz = clamp(z0, -PLAY_HALF, PLAY_HALF);
+  if (!insideAt(tx, SPAWN_Y, tz)) return { x: tx, z: tz, r: 0 };
+  for (let r = 0.5; r <= 6.0; r += 0.5) {
+    for (let dTheta = 0; dTheta < Math.PI * 2; dTheta += Math.PI / 12) {
+      const x = tx + r * Math.cos(dTheta);
+      const z = tz + r * Math.sin(dTheta);
+      if (x < -PLAY_HALF || x > PLAY_HALF || z < -PLAY_HALF || z > PLAY_HALF) continue;
+      if (!insideAt(x, SPAWN_Y, z)) return { x, z, r };
     }
   }
   return null;
 };
 
 const moves = [];
+console.log('name      old_xz                  new_xz                  r');
+console.log('--------- ----------------------- ----------------------- -----');
 for (const [name, x, z] of candidates) {
-  const t = findClear(x, z);
+  const t = relocate(x, z);
   if (!t) {
-    console.log(name, 'no clear spot');
+    console.log(name.padEnd(9), 'NO CLEAR SPOT');
     continue;
   }
   moves.push([name, t.x, t.z]);
   console.log(
-    name,
-    `old=(${x.toFixed(2)},${z.toFixed(2)}) -> new=(${t.x.toFixed(2)},${t.z.toFixed(2)}) dist=${t.r.toFixed(2)} surface_y=${t.surface.toFixed(2)}`,
+    name.padEnd(9),
+    `(${x.toFixed(2).padStart(7)}, ${z.toFixed(2).padStart(7)})`,
+    `(${t.x.toFixed(2).padStart(7)}, ${t.z.toFixed(2).padStart(7)})`,
+    t.r.toFixed(2).padStart(4),
   );
 }
 console.log('\nMOVES_JSON', JSON.stringify(moves));
